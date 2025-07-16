@@ -380,6 +380,7 @@ class SettingsConstants:
     TYPE__SELECT_1 = "select_1"
     TYPE__MULTISELECT = "multiselect"
     TYPE__FREE_ENTRY = "free_entry"
+    TYPE__SINGLE_SELECT = "single_select"
 
     ALL_ENABLED_DISABLED_TYPES = [
         TYPE__ENABLED_DISABLED,
@@ -737,6 +738,17 @@ class SettingsDefinition:
                       type=SettingsConstants.TYPE__FREE_ENTRY,
                       visibility=SettingsConstants.VISIBILITY__HIDDEN,
                       default_value=62),
+
+        # NFC Export設定
+        SettingsEntry(
+            attr_name=SettingsConstants.SETTING__NFC_EXPORT,
+            display_name=_("NFC Export"),
+            help_text=_("Enable NFC card export functionality"),
+            type=SettingsConstants.TYPE__SINGLE_SELECT,
+            selection_options=SettingsConstants.OPTIONS__ENABLED_DISABLED,
+            default_value=SettingsConstants.OPTION__DISABLED,
+            visibility=SettingsConstants.VISIBILITY__GENERAL,
+        ),
     ]
 
 

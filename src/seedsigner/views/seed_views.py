@@ -637,18 +637,22 @@ class SeedOptionsView(View):
 class SeedBackupView(View):
     VIEW_WORDS = ButtonOption("View Seed Words")
     EXPORT_SEEDQR = ButtonOption("Export as SeedQR")
+    EXPORT_NFC = ButtonOption("Export to NFC")  # 新規追加
 
     def __init__(self, seed_num):
         super().__init__()
         self.seed_num = seed_num
         self.seed = self.controller.get_seed(self.seed_num)
     
-
     def run(self):
         button_data = [self.VIEW_WORDS]
 
         if self.seed.seedqr_supported:
             button_data.append(self.EXPORT_SEEDQR)
+        
+        # NFC書き込み機能を追加
+        if self.settings.get_value(SettingsConstants.SETTING__NFC_EXPORT) == SettingsConstants.OPTION__ENABLED:
+            button_data.append(self.EXPORT_NFC)
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
@@ -665,6 +669,9 @@ class SeedBackupView(View):
 
         elif button_data[selected_menu_num] == self.EXPORT_SEEDQR:
             return Destination(SeedTranscribeSeedQRFormatView, view_args={"seed_num": self.seed_num})
+        
+        elif button_data[selected_menu_num] == self.EXPORT_NFC:  # 新規追加
+            return Destination(SeedExportNFCView, view_args={"seed_num": self.seed_num})
 
 
 
@@ -2297,3 +2304,152 @@ class SeedSignMessageSignedMessageQRView(View):
 
         # Exiting/Canceling the QR display screen always returns Home
         return Destination(MainMenuView, skip_current_view=True)
+
+
+"""****************************************************************************
+    NFC Export flow
+****************************************************************************"""
+class SeedExportNFCView(View):
+    WRITE_NFC = ButtonOption("Write NFC Card", SeedSignerIconConstants.QRCODE)
+
+    def __init__(self, seed_num: int):
+        super().__init__()
+        self.seed_num = seed_num
+        self.seed = self.controller.get_seed(self.seed_num)
+
+    def run(self):
+        button_data = [self.WRITE_NFC]
+        
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title=_("Export to NFC"),
+            button_data=button_data,
+            is_bottom_list=True,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+
+        elif button_data[selected_menu_num] == self.WRITE_NFC:
+            return Destination(SeedExportNFCWriteView, view_args={"seed_num": self.seed_num})
+
+
+class SeedExportNFCWriteView(View):
+    def __init__(self, seed_num: int):
+        super().__init__()
+        self.seed_num = seed_num
+        self.seed = self.controller.get_seed(self.seed_num)
+
+    def run(self):
+        from seedsigner.models.nfc_writer import NFCWriter
+        from seedsigner.gui.screens.loading_screen import LoadingScreen
+        
+        # 警告画面を表示
+        destination = Destination(
+            SeedExportNFCWriteProcessView,
+            view_args={"seed_num": self.seed_num},
+            skip_current_view=True,
+        )
+
+        if self.settings.get_value(SettingsConstants.SETTING__DIRE_WARNINGS) == SettingsConstants.OPTION__DISABLED:
+            return destination
+
+        selected_menu_num = self.run_screen(
+            DireWarningScreen,
+            status_headline=_("NFC Card contains your private key!"),
+            text=_("Keep your NFC card secure and away from unauthorized access."),
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+        else:
+            return destination
+
+
+class SeedExportNFCWriteProcessView(View):
+    def __init__(self, seed_num: int):
+        super().__init__()
+        self.seed_num = seed_num
+        self.seed = self.controller.get_seed(self.seed_num)
+
+    def run(self):
+        from seedsigner.models.nfc_writer import NFCWriter, NFCWriteException
+        from seedsigner.gui.screens.loading_screen import LoadingScreen
+        
+        try:
+            # NFCWriterインスタンスを作成
+            nfc_writer = NFCWriter()
+            
+            # 書き込み処理の実行
+            result = nfc_writer.write_seed_to_nfc(self.seed)
+            
+            if result['success']:
+                return Destination(SeedExportNFCWriteSuccessView, view_args={
+                    "seed_num": self.seed_num,
+                    "sector_num": result['sector_num']
+                })
+            else:
+                return Destination(SeedExportNFCWriteErrorView, view_args={
+                    "seed_num": self.seed_num,
+                    "error_message": result['error_message']
+                })
+                
+        except NFCWriteException as e:
+            return Destination(SeedExportNFCWriteErrorView, view_args={
+                "seed_num": self.seed_num,
+                "error_message": str(e)
+            })
+        except Exception as e:
+            return Destination(SeedExportNFCWriteErrorView, view_args={
+                "seed_num": self.seed_num,
+                "error_message": f"Unexpected error: {str(e)}"
+            })
+
+
+class SeedExportNFCWriteSuccessView(View):
+    def __init__(self, seed_num: int, sector_num: int):
+        super().__init__()
+        self.seed_num = seed_num
+        self.sector_num = sector_num
+
+    def run(self):
+        from seedsigner.gui.screens.screen import LargeIconStatusScreen
+        
+        self.run_screen(
+            LargeIconStatusScreen,
+            title=_("NFC Write Success"),
+            status_headline=_("Success!"),
+            text=_("Seed successfully written to NFC card sector {}").format(self.sector_num),
+            show_back_button=False,
+            button_data=[ButtonOption("OK")]
+        )
+
+        return Destination(SeedOptionsView, view_args={"seed_num": self.seed_num}, clear_history=True)
+
+
+class SeedExportNFCWriteErrorView(View):
+    RETRY = ButtonOption("Retry")
+    CANCEL = ButtonOption("Cancel")
+
+    def __init__(self, seed_num: int, error_message: str):
+        super().__init__()
+        self.seed_num = seed_num
+        self.error_message = error_message
+
+    def run(self):
+        button_data = [self.RETRY, self.CANCEL]
+        
+        selected_menu_num = self.run_screen(
+            DireWarningScreen,
+            title=_("NFC Write Error"),
+            status_icon_name=SeedSignerIconConstants.ERROR,
+            status_headline=_("Write Failed"),
+            text=_("Error: {}").format(self.error_message),
+            show_back_button=False,
+            button_data=button_data,
+        )
+
+        if button_data[selected_menu_num] == self.RETRY:
+            return Destination(SeedExportNFCWriteView, view_args={"seed_num": self.seed_num})
+        elif button_data[selected_menu_num] == self.CANCEL:
+            return Destination(SeedOptionsView, view_args={"seed_num": self.seed_num})
