@@ -37,7 +37,7 @@ class NFCWriter:
             
             # I2C接続でPN532を初期化
             i2c = busio.I2C(board.SCL, board.SDA)
-            self.nfc_module = PN532_I2C(i2c, debug=False)
+            self.nfc_module = PN532_I2C(i2c, debug=False, irq=None)
             self.nfc_module.SAM_configuration()
             
             logger.info("PN532 NFC module initialized successfully")
