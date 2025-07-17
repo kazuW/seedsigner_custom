@@ -1,6 +1,7 @@
 import logging
 import binascii
 import struct
+import time
 from typing import Dict, List, Optional, Union
 from seedsigner.models.seed import Seed
 from seedsigner.models.settings import SettingsConstants
@@ -29,7 +30,7 @@ class NFCWriter:
         self._initialize_nfc()
     
     def _initialize_nfc(self):
-        """PN532モジュールを初期化"""
+        """PN532モジュールを初期化（reset処理付き）"""
         try:
             import board
             import busio
@@ -37,10 +38,38 @@ class NFCWriter:
             
             # I2C接続でPN532を初期化
             i2c = busio.I2C(board.SCL, board.SDA)
-            self.nfc_module = PN532_I2C(i2c, debug=False, irq=None)
-            self.nfc_module.SAM_configuration()
             
-            logger.info("PN532 NFC module initialized successfully")
+            # Reset処理を追加
+            try:
+                # resetパラメータを指定して初期化
+                self.nfc_module = PN532_I2C(i2c, debug=False, irq=None, reset=True)
+                
+                # 明示的にモジュールをリセット
+                self.nfc_module.reset()
+                time.sleep(0.2)  # リセット後の待機時間
+                
+                # SAM設定
+                self.nfc_module.SAM_configuration()
+                
+                logger.info("PN532 NFC module initialized successfully with reset")
+                
+            except Exception as reset_error:
+                logger.warning(f"Reset failed, trying alternative initialization: {reset_error}")
+                
+                # 代替初期化方法
+                self.nfc_module = PN532_I2C(i2c, debug=False, irq=None)
+                
+                # 複数回試行でSAM設定
+                for attempt in range(3):
+                    try:
+                        time.sleep(0.1 * (attempt + 1))  # 徐々に待機時間を増加
+                        self.nfc_module.SAM_configuration()
+                        logger.info(f"PN532 NFC module initialized successfully (attempt {attempt + 1})")
+                        break
+                    except Exception as e:
+                        if attempt == 2:  # 最後の試行
+                            raise e
+                        logger.warning(f"SAM configuration attempt {attempt + 1} failed: {e}")
             
         except ImportError:
             logger.error("PN532 library not found. Please install adafruit-circuitpython-pn532")
@@ -112,8 +141,6 @@ class NFCWriter:
         Returns:
             bytes: カードUID、検出できなければNone
         """
-        import time
-        
         logger.info("Waiting for NFC card...")
         start_time = time.time()
         
