@@ -348,7 +348,7 @@ class SeedAddPassphraseView(View):
     """
     initial_keyboard: used by the screenshot generator to render each different keyboard layout.
     """
-    def __init__(self, initial_keyboard: str = seed_screens.SeedAddPassphraseScreen.KEYBOARD__LOWERCASE_BUTTON):
+    def __init__(self, initial_keyboard: str = seed_screens.SeedAddPassphraseScreen.KEYBOARD__LOWERCASE_BUTTON_TEXT):
         super().__init__()
         self.initial_keyboard = initial_keyboard
         self.seed = self.controller.storage.get_pending_seed()
@@ -2376,7 +2376,7 @@ class SeedExportNFCWriteProcessView(View):
         from seedsigner.models.nfc_writer import NFCWriter, NFCWriteException
         
         logger.info(f"Starting NFC write process for seed {self.seed_num}")
-        
+
         # 処理中メッセージを表示
         self.run_screen(
             seed_screens.SeedWordsBackupTestPromptScreen,  # 既存のスクリーンを流用
