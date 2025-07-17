@@ -2342,7 +2342,7 @@ class SeedExportNFCWriteView(View):
 
     def run(self):
         from seedsigner.models.nfc_writer import NFCWriter
-        from seedsigner.gui.screens.loading_screen import LoadingScreen
+        #from seedsigner.gui.screens.loading_screen import LoadingScreen
         
         # 警告画面を表示
         destination = Destination(
