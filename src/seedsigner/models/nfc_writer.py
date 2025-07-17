@@ -20,7 +20,7 @@ _global_initialization_attempted = False
 _global_initialization_successful = False
 
 def _initialize_global_nfc():
-    """グローバルNFCインスタンスを初期化（起動時に1回だけ）"""
+    """グローバルNFCインスタンスを初期化（遅延実行）"""
     global _global_nfc_instance, _global_i2c_instance, _global_initialization_attempted, _global_initialization_successful
     
     if _global_initialization_attempted:
@@ -29,11 +29,19 @@ def _initialize_global_nfc():
     _global_initialization_attempted = True
     
     try:
-        import board
-        import busio
-        from adafruit_pn532.i2c import PN532_I2C
+        # 遅延インポート（GPIO競合を回避）
+        logger.info("Starting delayed import of NFC libraries...")
         
-        logger.info("Initializing global NFC instance on startup...")
+        try:
+            import board
+            import busio
+            from adafruit_pn532.i2c import PN532_I2C
+            logger.info("NFC libraries imported successfully")
+        except Exception as import_error:
+            logger.error(f"Failed to import NFC libraries: {import_error}")
+            raise import_error
+        
+        logger.info("Initializing global NFC instance...")
         
         # I2C初期化
         try:
@@ -69,15 +77,11 @@ def _initialize_global_nfc():
         
         logger.info("Global NFC initialization completed successfully")
         
-    except ImportError as import_error:
-        logger.error(f"Required libraries not found: {import_error}")
-        _global_initialization_successful = False
-        raise import_error
-        
     except Exception as e:
         logger.error(f"Global NFC initialization failed: {e}")
         _global_initialization_successful = False
-        raise e
+        # エラーでも例外を発生させない（アプリケーション継続のため）
+        logger.warning("NFC functionality will be disabled")
 
 def _create_global_test_mock():
     """グローバルテストモック作成"""
@@ -131,15 +135,12 @@ class NFCWriter:
     SEED_256BIT = 0xFF
     
     def __init__(self):
-        """初期化（グローバルインスタンスを使用）"""
+        """初期化（遅延初期化）"""
         global _global_nfc_instance, _global_i2c_instance, _global_initialization_successful
         
-        # 初期化が完了していない場合は再試行
+        # 実際に使用されるときに初期化
         if not _global_initialization_attempted:
-            try:
-                _initialize_global_nfc()
-            except Exception as e:
-                logger.error(f"Failed to initialize NFC during instance creation: {e}")
+            _initialize_global_nfc()
         
         self._nfc_module = _global_nfc_instance
         self._i2c_instance = _global_i2c_instance
@@ -149,8 +150,15 @@ class NFCWriter:
         logger.info(f"NFCWriter instance created, initialized: {self._initialized}")
 
     def write_seed_to_nfc(self, seed: Seed) -> Dict[str, Union[bool, str, int]]:
-        """シードをNFCカードに書き込む（グローバルインスタンス使用）"""
+        """シードをNFCカードに書き込む（遅延初期化対応）"""
         try:
+            # 初期化がまだの場合は再試行
+            if not self._initialized:
+                logger.info("Retrying NFC initialization...")
+                _initialize_global_nfc()
+                self._nfc_module = _global_nfc_instance
+                self._initialized = _global_initialization_successful and (_global_nfc_instance is not None)
+            
             if not self._initialized:
                 return {
                     'success': False,
@@ -378,5 +386,5 @@ class NFCWriter:
             logger.error(f"Failed to write to sector {sector_num}: {e}")
             return False
 
-# モジュールのインポート時に初期化を実行
-_initialize_global_nfc()
+# モジュールインポート時の初期化は行わない（遅延初期化）
+# _initialize_global_nfc()  # <- この行を削除
