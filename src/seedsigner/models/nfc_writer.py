@@ -36,26 +36,48 @@ def _initialize_global_nfc():
         logger.info("Initializing global NFC instance on startup...")
         
         # I2C初期化
-        _global_i2c_instance = busio.I2C(board.SCL, board.SDA)
-        time.sleep(0.1)
+        try:
+            _global_i2c_instance = busio.I2C(board.SCL, board.SDA)
+            time.sleep(0.1)
+            logger.info("I2C initialization successful")
+        except Exception as i2c_error:
+            logger.error(f"I2C initialization failed: {i2c_error}")
+            raise i2c_error
         
         # PN532初期化
-        _global_nfc_instance = PN532_I2C(_global_i2c_instance, debug=False, irq=None)
-        time.sleep(0.1)
+        try:
+            _global_nfc_instance = PN532_I2C(_global_i2c_instance, debug=False, irq=None)
+            time.sleep(0.1)
+            logger.info("PN532 instance creation successful")
+        except Exception as pn532_error:
+            logger.error(f"PN532 instance creation failed: {pn532_error}")
+            raise pn532_error
         
         # SAM設定（起動時に1回だけ）
-        _global_nfc_instance.SAM_configuration()
+        try:
+            _global_nfc_instance.SAM_configuration()
+            logger.info("SAM configuration successful")
+            _global_initialization_successful = True
+        except Exception as sam_error:
+            logger.error(f"SAM configuration failed: {sam_error}")
+            # SAMエラーでも継続（既に設定済みの可能性）
+            if "different mode" in str(sam_error).lower():
+                logger.warning("SAM already configured, continuing with existing configuration...")
+                _global_initialization_successful = True  # 既に設定済みなら成功扱い
+            else:
+                raise sam_error
         
-        _global_initialization_successful = True
-        logger.info("Global NFC initialization successful on startup")
+        logger.info("Global NFC initialization completed successfully")
+        
+    except ImportError as import_error:
+        logger.error(f"Required libraries not found: {import_error}")
+        _global_initialization_successful = False
+        raise import_error
         
     except Exception as e:
-        logger.error(f"Global NFC initialization failed on startup: {e}")
+        logger.error(f"Global NFC initialization failed: {e}")
         _global_initialization_successful = False
-        
-        # フォールバック: テストモック
-        _global_nfc_instance = _create_global_test_mock()
-        logger.warning("Using global test mock due to initialization failure")
+        raise e
 
 def _create_global_test_mock():
     """グローバルテストモック作成"""
@@ -112,12 +134,19 @@ class NFCWriter:
         """初期化（グローバルインスタンスを使用）"""
         global _global_nfc_instance, _global_i2c_instance, _global_initialization_successful
         
+        # 初期化が完了していない場合は再試行
+        if not _global_initialization_attempted:
+            try:
+                _initialize_global_nfc()
+            except Exception as e:
+                logger.error(f"Failed to initialize NFC during instance creation: {e}")
+        
         self._nfc_module = _global_nfc_instance
         self._i2c_instance = _global_i2c_instance
         self._current_card_uid = None
-        self._initialized = _global_initialization_successful
+        self._initialized = _global_initialization_successful and (_global_nfc_instance is not None)
         
-        logger.info(f"NFCWriter instance created, using global NFC instance (success: {self._initialized})")
+        logger.info(f"NFCWriter instance created, initialized: {self._initialized}")
 
     def write_seed_to_nfc(self, seed: Seed) -> Dict[str, Union[bool, str, int]]:
         """シードをNFCカードに書き込む（グローバルインスタンス使用）"""
@@ -125,7 +154,13 @@ class NFCWriter:
             if not self._initialized:
                 return {
                     'success': False,
-                    'error_message': 'NFC module not initialized properly'
+                    'error_message': 'NFC module not initialized properly. Please check hardware connection.'
+                }
+            
+            if self._nfc_module is None:
+                return {
+                    'success': False,
+                    'error_message': 'NFC module instance is None. Hardware may not be connected.'
                 }
             
             logger.info("Starting NFC write process...")
