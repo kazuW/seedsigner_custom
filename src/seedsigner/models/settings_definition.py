@@ -326,6 +326,7 @@ class SettingsConstants:
     SETTING__NETWORK = "network"
     SETTING__QR_DENSITY = "qr_density"
     SETTING__XPUB_EXPORT = "xpub_export"
+    SETTING__NFC_EXPORT = "nfc_export"
     SETTING__SIG_TYPES = "sig_types"
     SETTING__SCRIPT_TYPES = "script_types"
     SETTING__XPUB_DETAILS = "xpub_details"
