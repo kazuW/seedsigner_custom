@@ -424,7 +424,7 @@ class NFCWriter:
                 logger.error(f"Authentication failed for management block {management_block_num}")
                 return False
             
-            self.nfc_module.mifare_classic_write_block(management_block_num, bytes(management_block))
+            self._nfc_module.mifare_classic_write_block(management_block_num, bytes(management_block))
             logger.info(f"Management block written to block {management_block_num}")
             
             # シードブロックの認証と書き込み
@@ -432,7 +432,7 @@ class NFCWriter:
                 logger.error(f"Authentication failed for seed block {seed_block_num}")
                 return False
             
-            self.nfc_module.mifare_classic_write_block(seed_block_num, bytes(seed_block))
+            self._nfc_module.mifare_classic_write_block(seed_block_num, bytes(seed_block))
             logger.info(f"Seed block written to block {seed_block_num}")
             
             return True
