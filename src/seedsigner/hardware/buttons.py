@@ -11,27 +11,29 @@ logger = logging.getLogger(__name__)
 class HardwareButtons(Singleton):
     if GPIO.RPI_INFO['P1_REVISION'] == 3: #This indicates that we have revision 3 GPIO
         logger.info("Detected 40pin GPIO (Rasbperry Pi 2 and above)")
-        KEY_UP_PIN = 31
-        KEY_DOWN_PIN = 35
-        KEY_LEFT_PIN = 29
-        KEY_RIGHT_PIN = 37
-        KEY_PRESS_PIN = 33
+        # BOARDピン番号からBCMピン番号への変換
+        KEY_UP_PIN = 6      # BOARD 31 -> BCM 6
+        KEY_DOWN_PIN = 19   # BOARD 35 -> BCM 19
+        KEY_LEFT_PIN = 5    # BOARD 29 -> BCM 5
+        KEY_RIGHT_PIN = 26  # BOARD 37 -> BCM 26
+        KEY_PRESS_PIN = 13  # BOARD 33 -> BCM 13
 
-        KEY1_PIN = 40
-        KEY2_PIN = 38
-        KEY3_PIN = 36
+        KEY1_PIN = 21       # BOARD 40 -> BCM 21
+        KEY2_PIN = 20       # BOARD 38 -> BCM 20
+        KEY3_PIN = 16       # BOARD 36 -> BCM 16
 
     else:
         logger.info("Assuming 26 Pin GPIO (Raspberry P1 1)")
-        KEY_UP_PIN = 5
-        KEY_DOWN_PIN = 11
-        KEY_LEFT_PIN = 3
-        KEY_RIGHT_PIN = 15
-        KEY_PRESS_PIN = 7
+        # BOARDピン番号からBCMピン番号への変換（26ピン版）
+        KEY_UP_PIN = 3      # BOARD 5 -> BCM 3
+        KEY_DOWN_PIN = 17   # BOARD 11 -> BCM 17
+        KEY_LEFT_PIN = 2    # BOARD 3 -> BCM 2
+        KEY_RIGHT_PIN = 22  # BOARD 15 -> BCM 22
+        KEY_PRESS_PIN = 4   # BOARD 7 -> BCM 4
 
-        KEY1_PIN = 16
-        KEY2_PIN = 12
-        KEY3_PIN = 8
+        KEY1_PIN = 23       # BOARD 16 -> BCM 23
+        KEY2_PIN = 18       # BOARD 12 -> BCM 18
+        KEY3_PIN = 14       # BOARD 8 -> BCM 14
 
 
     @classmethod
@@ -40,8 +42,24 @@ class HardwareButtons(Singleton):
         if cls._instance is None:
             cls._instance = cls.__new__(cls)
 
-            #init GPIO
-            GPIO.setmode(GPIO.BOARD)
+            # GPIO設定の前に現在のモードを確認
+            current_mode = GPIO.getmode()
+            if current_mode is None:
+                # モードが設定されていない場合はBCMを使用
+                GPIO.setmode(GPIO.BCM)
+                logger.info("GPIO mode set to BCM")
+            elif current_mode == GPIO.BOARD:
+                # 既にBOARDモードが設定されている場合は一度クリーンアップ
+                logger.warning("GPIO was in BOARD mode, switching to BCM")
+                GPIO.cleanup()
+                GPIO.setmode(GPIO.BCM)
+                logger.info("GPIO mode changed to BCM")
+            elif current_mode == GPIO.BCM:
+                logger.info("GPIO mode already set to BCM")
+            # 既にBCMモードの場合はそのまま使用
+
+            # init GPIO (BCMピン番号を使用)
+            GPIO.setwarnings(False)
             GPIO.setup(HardwareButtons.KEY_UP_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)    # Input with pull-up
             GPIO.setup(HardwareButtons.KEY_DOWN_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # Input with pull-up
             GPIO.setup(HardwareButtons.KEY_LEFT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # Input with pull-up
@@ -175,25 +193,27 @@ class HardwareButtons(Singleton):
 # class used as short hand for static button/channel lookup values
 class HardwareButtonsConstants:
     if GPIO.RPI_INFO['P1_REVISION'] == 3: #This indicates that we have revision 3 GPIO
-        KEY_UP = 31
-        KEY_DOWN = 35
-        KEY_LEFT = 29
-        KEY_RIGHT = 37
-        KEY_PRESS = 33
+        # BCMピン番号を使用
+        KEY_UP = 6      # BOARD 31 -> BCM 6
+        KEY_DOWN = 19   # BOARD 35 -> BCM 19
+        KEY_LEFT = 5    # BOARD 29 -> BCM 5
+        KEY_RIGHT = 26  # BOARD 37 -> BCM 26
+        KEY_PRESS = 13  # BOARD 33 -> BCM 13
 
-        KEY1 = 40
-        KEY2 = 38
-        KEY3 = 36
+        KEY1 = 21       # BOARD 40 -> BCM 21
+        KEY2 = 20       # BOARD 38 -> BCM 20
+        KEY3 = 16       # BOARD 36 -> BCM 16
     else:
-        KEY_UP = 5
-        KEY_DOWN = 11
-        KEY_LEFT = 3
-        KEY_RIGHT = 15
-        KEY_PRESS = 7
+        # BCMピン番号を使用（26ピン版）
+        KEY_UP = 3      # BOARD 5 -> BCM 3
+        KEY_DOWN = 17   # BOARD 11 -> BCM 17
+        KEY_LEFT = 2    # BOARD 3 -> BCM 2
+        KEY_RIGHT = 22  # BOARD 15 -> BCM 22
+        KEY_PRESS = 4   # BOARD 7 -> BCM 4
 
-        KEY1 = 16
-        KEY2 = 12
-        KEY3 = 8
+        KEY1 = 23       # BOARD 16 -> BCM 23
+        KEY2 = 18       # BOARD 12 -> BCM 18
+        KEY3 = 14       # BOARD 8 -> BCM 14
 
     OVERRIDE = 1000
 
