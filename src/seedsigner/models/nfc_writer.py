@@ -26,23 +26,14 @@ class NFCWriter:
     SEED_128BIT = 0x00
     SEED_256BIT = 0xFF
     
-    # クラス変数でインスタンスを管理
-    _instance = None
-    _nfc_module = None
-    _i2c_instance = None
-    
-    def __new__(cls):
-        """シングルトンパターンでインスタンスを管理"""
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-    
     def __init__(self):
-        if self._nfc_module is None:
-            self._initialize_nfc()
+        """インスタンス変数として初期化"""
+        self._nfc_module = None
+        self._i2c_instance = None
+        self._initialize_nfc()
     
     def _initialize_nfc(self):
-        """PN532モジュールを初期化（初期化問題の改善版）"""
+        """PN532モジュールを初期化（シングルトンパターンなし）"""
         try:
             # 既存のインスタンスをクリア
             self._cleanup_existing_instances()
@@ -53,16 +44,6 @@ class NFCWriter:
             
             # I2C接続の初期化
             try:
-                # 既存のI2Cインスタンスがあれば完全に削除
-                if self._i2c_instance is not None:
-                    try:
-                        self._i2c_instance.deinit()
-                    except:
-                        pass
-                    del self._i2c_instance
-                    self._i2c_instance = None
-                    time.sleep(0.3)
-                
                 # I2Cインスタンスを作成
                 self._i2c_instance = busio.I2C(board.SCL, board.SDA, frequency=100000)
                 logger.info("I2C interface initialized")
