@@ -153,6 +153,10 @@ class NFCWriter:
                     if self._authenticate_block(block_num):
                         block_data = self.nfc_module.mifare_classic_read_block(block_num)
                         sector_data.append(block_data)
+                        # ログ出力
+                        logger.debug(f"Read block {block_num}: {binascii.hexlify(block_data).decode()}")
+                        # 読み込み間隔を空ける
+                        time.sleep(0.1)
                     else:
                         logger.warning(f"Authentication failed for block {block_num}")
                         break
