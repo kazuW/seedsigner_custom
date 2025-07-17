@@ -742,14 +742,13 @@ class SettingsDefinition:
 
         # NFC Export設定
         SettingsEntry(
+            category=SettingsConstants.CATEGORY__FEATURES,
             attr_name=SettingsConstants.SETTING__NFC_EXPORT,
-            display_name=_("NFC Export"),
-            help_text=_("Enable NFC card export functionality"),
-            type=SettingsConstants.TYPE__SINGLE_SELECT,
-            selection_options=SettingsConstants.OPTIONS__ENABLED_DISABLED,
-            default_value=SettingsConstants.OPTION__DISABLED,
-            visibility=SettingsConstants.VISIBILITY__GENERAL,
-        ),
+            abbreviated_name="nfc_export",
+            display_name=_mft("NFC Export"),
+            help_text=_mft("Enable NFC card export functionality"),
+            visibility=SettingsConstants.VISIBILITY__ADVANCED,
+            default_value=SettingsConstants.OPTION__DISABLED),
     ]
 
 
