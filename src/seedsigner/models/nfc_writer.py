@@ -93,12 +93,13 @@ def _initialize_global_nfc():
                     
                 except Exception as recovery_error:
                     logger.error(f"Recovery failed: {recovery_error}")
-                    # 最後の手段：テストモードで継続
-                    logger.warning("Falling back to test mode due to SAM configuration issues")
-                    _global_nfc_instance = _create_global_test_mock()
-                    _global_initialization_successful = True
+                    # 完全に失敗
+                    _global_initialization_successful = False
+                    _global_nfc_instance = None
             else:
                 # その他のエラーは失敗として扱う
+                _global_initialization_successful = False
+                _global_nfc_instance = None
                 raise sam_error
         
         logger.info("Global NFC initialization completed successfully")
@@ -106,50 +107,7 @@ def _initialize_global_nfc():
     except Exception as e:
         logger.error(f"Global NFC initialization failed: {e}")
         _global_initialization_successful = False
-        
-        # 完全失敗時もテストモードで継続（開発用）
-        logger.warning("Falling back to test mode due to initialization failure")
-        _global_nfc_instance = _create_global_test_mock()
-        _global_initialization_successful = True
-        logger.info("Test mode NFC functionality enabled")
-
-def _create_global_test_mock():
-    """グローバルテストモック作成"""
-    class GlobalTestMockNFC:
-        def __init__(self):
-            self.mock_sectors = {}
-            
-        def read_passive_target(self, timeout=1):
-            time.sleep(0.5)
-            return b'\x04\x12\x34\x56'
-        
-        def mifare_classic_authenticate_block(self, uid, block_num, key_type, key):
-            return True
-        
-        def mifare_classic_read_block(self, block_num):
-            return b'\x00' * 16
-        
-        def mifare_classic_write_block(self, block_num, data):
-            sector_num = block_num // 4
-            if sector_num not in self.mock_sectors:
-                self.mock_sectors[sector_num] = {}
-            self.mock_sectors[sector_num][block_num] = data
-            
-            logger.info(f"Global Mock write to block {block_num}: {binascii.hexlify(data).decode()}")
-            return True
-        
-        def power_down(self):
-            pass
-        
-        def SAM_configuration(self):
-            pass
-        
-        @property
-        def firmware_version(self):
-            return (1, 6, 7)
-    
-    logger.info("Created global test mock NFC module")
-    return GlobalTestMockNFC()
+        _global_nfc_instance = None
 
 class NFCWriter:
     """PN532モジュールを使用してNFCカードにシードを書き込むクラス"""
