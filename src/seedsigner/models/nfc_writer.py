@@ -30,39 +30,37 @@ class NFCWriter:
         """インスタンス変数として初期化"""
         self._nfc_module = None
         self._i2c_instance = None
+        self._current_card_uid = None  # 現在のカードのUIDを保存
         self._initialize_nfc()
     
     def _initialize_nfc(self):
-        """PN532モジュールを初期化（確実な解決版）"""
+        """PN532モジュールを初期化（テストコードベース）"""
         try:
-            # 完全なクリーンアップ
-            self._complete_cleanup()
+            # 既存インスタンスのクリーンアップ
+            self._simple_cleanup()
             
             import board
             import busio
             from adafruit_pn532.i2c import PN532_I2C
             
-            # I2C接続の初期化
+            # テストコードと同じ初期化方法
             try:
-                self._i2c_instance = busio.I2C(board.SCL, board.SDA, frequency=100000)
-                logger.info("I2C interface initialized")
-            except Exception as i2c_error:
-                logger.error(f"I2C initialization failed: {i2c_error}")
-                raise NFCWriteException(f"I2C initialization failed: {i2c_error}")
-            
-            # 単一の確実な初期化方法
-            try:
-                logger.info("Attempting definitive initialization...")
-                self._nfc_module = self._definitive_initialization()
-                if self._nfc_module is not None:
-                    logger.info("PN532 initialized successfully")
-                    return
+                logger.info("Initializing I2C...")
+                self._i2c_instance = busio.I2C(board.SCL, board.SDA)
+                
+                logger.info("Initializing PN532...")
+                self._nfc_module = PN532_I2C(self._i2c_instance, debug=False, irq=None)
+                
+                logger.info("Configuring SAM...")
+                self._nfc_module.SAM_configuration()
+                
+                logger.info("PN532 initialized successfully")
+                return
+                
             except Exception as e:
-                logger.error(f"Definitive initialization failed: {e}")
-                # フォールバック: テスト用モックモジュール
-                self._nfc_module = self._create_test_mock()
-                logger.warning("Using test mock module")
-            
+                logger.error(f"Simple initialization failed: {e}")
+                raise NFCWriteException(f"NFC module initialization failed: {e}")
+                
         except ImportError:
             logger.error("PN532 library not found")
             raise NFCWriteException("PN532 library not installed")
@@ -70,14 +68,10 @@ class NFCWriter:
             logger.error(f"Critical initialization failure: {e}")
             raise NFCWriteException(f"NFC module initialization failed: {e}")
 
-    def _complete_cleanup(self):
-        """完全なクリーンアップ"""
+    def _simple_cleanup(self):
+        """シンプルなクリーンアップ"""
         try:
             if hasattr(self, '_nfc_module') and self._nfc_module is not None:
-                try:
-                    self._nfc_module.power_down()
-                except:
-                    pass
                 del self._nfc_module
                 self._nfc_module = None
             
@@ -89,14 +83,13 @@ class NFCWriter:
                 del self._i2c_instance
                 self._i2c_instance = None
             
-            # 強制ガベージコレクション
-            gc.collect()
-            time.sleep(1.0)
+            # 短い待機時間
+            time.sleep(0.1)
             
-            logger.info("Complete cleanup finished")
+            logger.info("Simple cleanup completed")
             
         except Exception as e:
-            logger.warning(f"Complete cleanup failed: {e}")
+            logger.warning(f"Simple cleanup failed: {e}")
 
     def _definitive_initialization(self):
         """確実な初期化方法"""
@@ -204,23 +197,35 @@ class NFCWriter:
                 'error_message': str(e)
             }
     
-    def _wait_for_card(self, timeout: int = 30) -> Optional[bytes]:
-        """NFCカードの検出を待つ
-        
-        Args:
-            timeout: タイムアウト時間（秒）
+    def _authenticate_block(self, block_num: int, uid: bytes = None) -> bool:
+        """ブロックの認証を行う（テストコードベース）"""
+        try:
+            default_key = b'\xFF\xFF\xFF\xFF\xFF\xFF'
             
-        Returns:
-            bytes: カードUID、検出できなければNone
-        """
+            # UIDが提供されていない場合は、現在のカードのUIDを使用
+            if uid is None:
+                uid = self._current_card_uid
+            
+            # テストコードと同じ認証方法
+            return self._nfc_module.mifare_classic_authenticate_block(
+                uid, block_num, 0x60, default_key
+            )
+        except Exception as e:
+            logger.debug(f"Authentication failed for block {block_num}: {e}")
+            return False
+
+    def _wait_for_card(self, timeout: int = 30) -> Optional[bytes]:
+        """NFCカードの検出を待つ（テストコードベース）"""
         logger.info("Waiting for NFC card...")
         start_time = time.time()
         
         while time.time() - start_time < timeout:
             try:
-                uid = self._nfc_module.read_passive_target(timeout=1)
-                if uid:
-                    logger.info(f"NFC card detected: {binascii.hexlify(uid).decode()}")
+                # テストコードと同じ検出方法
+                uid = self._nfc_module.read_passive_target(timeout=0.5)
+                if uid is not None:
+                    logger.info(f"NFC card detected: {[hex(i) for i in uid]}")
+                    self._current_card_uid = uid  # UIDを保存
                     return uid
             except Exception as e:
                 logger.debug(f"Card detection attempt failed: {e}")
@@ -231,62 +236,48 @@ class NFCWriter:
         return None
     
     def _read_all_sectors(self) -> Dict[int, List[bytes]]:
-        """全セクタのデータを読み込む
-        
-        Returns:
-            Dict: セクタ番号をキーとする各セクタのブロックデータ
-        """
+        """全セクタのデータを読み込む（テストコードベース）"""
         sectors_data = {}
         
-        for sector in range(1, self.MAX_SECTORS):  # セクタ0はシステム用なので除外
+        # テストコードと同じ範囲（0-63ブロック）
+        for block_number in range(64):
+            sector_number = block_number // 4
+            block_index = block_number % 4
+            
+            # トレーラーブロックはスキップ
+            if block_index == 3:
+                continue
+            
+            # セクタ0はシステム領域なのでスキップ
+            if sector_number == 0:
+                continue
+            
             try:
-                sector_data = []
-                for block in range(self.SECTOR_SIZE):
-                    block_num = sector * self.SECTOR_SIZE + block
-                    
-                    # トレーラーブロックは読み込まない
-                    if block == 3:  # トレーラーブロック
-                        continue
-                    
-                    # 認証してブロックを読み込む
-                    if self._authenticate_block(block_num):
-                        block_data = self._nfc_module.mifare_classic_read_block(block_num)
-                        sector_data.append(block_data)
-                        # ログ出力
-                        logger.debug(f"Read block {block_num}: {binascii.hexlify(block_data).decode()}")
-                        # 読み込み間隔を空ける
-                        time.sleep(0.1)
-                    else:
-                        logger.warning(f"Authentication failed for block {block_num}")
-                        break
+                # テストコードと同じ認証方法
+                success = self._nfc_module.mifare_classic_authenticate_block(
+                    self._current_card_uid, block_number, 0x60, b'\xFF\xFF\xFF\xFF\xFF\xFF'
+                )
                 
-                if len(sector_data) == 3:  # 3ブロック正常に読み込めた場合
-                    sectors_data[sector] = sector_data
+                if not success:
+                    logger.warning(f"Authentication failed for block {block_number}")
+                    continue
+                
+                # データ読み出し
+                block_data = self._nfc_module.mifare_classic_read_block(block_number)
+                if block_data is not None:
+                    if sector_number not in sectors_data:
+                        sectors_data[sector_number] = []
+                    sectors_data[sector_number].append(block_data)
                     
+                    logger.debug(f"Read block {block_number}: {' '.join('{:02X}'.format(x) for x in block_data)}")
+                
+                time.sleep(0.1)  # テストコードと同じ待機時間
+                
             except Exception as e:
-                logger.debug(f"Failed to read sector {sector}: {e}")
+                logger.debug(f"Failed to read block {block_number}: {e}")
                 continue
         
         return sectors_data
-    
-    def _authenticate_block(self, block_num: int) -> bool:
-        """ブロックの認証を行う
-        
-        Args:
-            block_num: ブロック番号
-            
-        Returns:
-            bool: 認証成功/失敗
-        """
-        try:
-            # デフォルトキーで認証を試行
-            default_key = b'\xFF\xFF\xFF\xFF\xFF\xFF'
-            return self._nfc_module.mifare_classic_authenticate_block(
-                block_num, 0x60, default_key  # 0x60 = Key A
-            )
-        except Exception as e:
-            logger.debug(f"Authentication failed for block {block_num}: {e}")
-            return False
     
     def _find_empty_sector(self, sectors_data: Dict[int, List[bytes]]) -> Optional[int]:
         """空きセクタを検索する
