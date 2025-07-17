@@ -1,9 +1,7 @@
 import logging
 import binascii
-import struct
 import time
-import gc
-from typing import Dict, List, Optional, Union
+from typing import Dict, Optional, Union
 from seedsigner.models.seed import Seed
 from seedsigner.models.settings import SettingsConstants
 
@@ -12,114 +10,6 @@ logger = logging.getLogger(__name__)
 class NFCWriteException(Exception):
     """NFC書き込みエラーの例外クラス"""
     pass
-
-# モジュールレベルのグローバル変数（起動時に1回だけ初期化）
-_global_nfc_instance = None
-_global_i2c_instance = None
-_global_initialization_attempted = False
-_global_initialization_successful = False
-
-def _initialize_global_nfc():
-    """グローバルNFCインスタンスを初期化（遅延実行）"""
-    global _global_nfc_instance, _global_i2c_instance, _global_initialization_attempted, _global_initialization_successful
-    
-    if _global_initialization_attempted:
-        return  # 既に初期化を試行済み
-    
-    _global_initialization_attempted = True
-    
-    try:
-        # 遅延インポート（GPIO競合を回避）
-        logger.info("Starting delayed import of NFC libraries...")
-        
-        # 現在のGPIOモードを確認
-        try:
-            import RPi.GPIO as GPIO
-            current_mode = GPIO.getmode()
-            logger.info(f"Current GPIO mode: {current_mode}")
-            
-            # BCMモードでない場合は警告
-            if current_mode != GPIO.BCM:
-                logger.warning(f"GPIO mode is {current_mode}, NFC requires BCM mode")
-        except Exception as gpio_error:
-            logger.warning(f"GPIO mode check failed: {gpio_error}")
-        
-        try:
-            import board
-            import busio
-            from adafruit_pn532.i2c import PN532_I2C
-            logger.info("NFC libraries imported successfully")
-        except Exception as import_error:
-            logger.error(f"Failed to import NFC libraries: {import_error}")
-            raise import_error
-        
-        logger.info("Initializing global NFC instance...")
-        
-        # I2C初期化
-        try:
-            _global_i2c_instance = busio.I2C(board.SCL, board.SDA)
-            time.sleep(0.1)
-            logger.info("I2C initialization successful")
-        except Exception as i2c_error:
-            logger.error(f"I2C initialization failed: {i2c_error}")
-            raise i2c_error
-        
-        # PN532初期化
-        try:
-            _global_nfc_instance = PN532_I2C(_global_i2c_instance, debug=False, irq=None)
-            time.sleep(0.1)
-            logger.info("PN532 instance creation successful")
-        except Exception as pn532_error:
-            logger.error(f"PN532 instance creation failed: {pn532_error}")
-            raise pn532_error
-        
-        # SAM設定（改善版）
-        try:
-            # 既存の設定をリセットしてから設定
-            logger.info("Attempting SAM configuration...")
-            _global_nfc_instance.SAM_configuration()
-            logger.info("SAM configuration successful")
-            _global_initialization_successful = True
-        except Exception as sam_error:
-            logger.error(f"SAM configuration failed: {sam_error}")
-            
-            # 特定のエラーメッセージをチェック
-            error_message = str(sam_error).lower()
-            if "different mode" in error_message or "already been set" in error_message:
-                logger.warning("SAM mode conflict detected, attempting recovery...")
-                
-                # リカバリを試行
-                try:
-                    # PN532を再作成
-                    _global_nfc_instance = PN532_I2C(_global_i2c_instance, debug=False, irq=None)
-                    time.sleep(0.3)  # より長い待機時間
-                    
-                    # フィームウェアバージョンを確認（チップが応答するかテスト）
-                    fw_version = _global_nfc_instance.firmware_version
-                    logger.info(f"PN532 firmware version: {fw_version}")
-                    
-                    # SAM設定を再試行
-                    _global_nfc_instance.SAM_configuration()
-                    logger.info("SAM configuration successful after recovery")
-                    _global_initialization_successful = True
-                    
-                except Exception as recovery_error:
-                    logger.error(f"Recovery failed: {recovery_error}")
-                    # 完全に失敗
-                    _global_initialization_successful = False
-                    _global_nfc_instance = None
-            else:
-                # その他のエラーは失敗として扱う
-                _global_initialization_successful = False
-                _global_nfc_instance = None
-                raise sam_error
-        
-        logger.info("Global NFC initialization completed successfully")
-        
-    except Exception as e:
-        logger.error(f"Global NFC initialization failed: {e}")
-        _global_initialization_successful = False
-        _global_nfc_instance = None
 
 class NFCWriter:
     """PN532モジュールを使用してNFCカードにシードを書き込むクラス"""
@@ -135,45 +25,63 @@ class NFCWriter:
     SEED_256BIT = 0xFF
     
     def __init__(self):
-        """初期化（遅延初期化）"""
-        global _global_nfc_instance, _global_i2c_instance, _global_initialization_successful
-        
-        # 実際に使用されるときに初期化
-        if not _global_initialization_attempted:
-            _initialize_global_nfc()
-        
-        self._nfc_module = _global_nfc_instance
-        self._i2c_instance = _global_i2c_instance
+        """初期化"""
+        self._nfc_module = None
         self._current_card_uid = None
-        self._initialized = _global_initialization_successful and (_global_nfc_instance is not None)
-        
-        logger.info(f"NFCWriter instance created, initialized: {self._initialized}")
+        self._initialized = False
+
+    def _initialize_nfc(self) -> bool:
+        """NFC初期化（書き込み前に毎回実行）"""
+        try:
+            logger.info("Initializing NFC module...")
+            
+            # 現在のGPIOモードを確認
+            try:
+                import RPi.GPIO as GPIO
+                current_mode = GPIO.getmode()
+                logger.debug(f"Current GPIO mode: {current_mode}")
+            except Exception:
+                pass
+            
+            # NFCライブラリをインポート
+            import board
+            import busio
+            from adafruit_pn532.i2c import PN532_I2C
+            
+            # I2C初期化
+            i2c = busio.I2C(board.SCL, board.SDA)
+            time.sleep(0.1)
+            
+            # PN532初期化
+            self._nfc_module = PN532_I2C(i2c, debug=False, irq=None)
+            time.sleep(0.1)
+            
+            # SAM設定
+            self._nfc_module.SAM_configuration()
+            
+            self._initialized = True
+            logger.info("NFC initialization successful")
+            return True
+            
+        except Exception as e:
+            logger.error(f"NFC initialization failed: {e}")
+            self._nfc_module = None
+            self._initialized = False
+            return False
 
     def write_seed_to_nfc(self, seed: Seed) -> Dict[str, Union[bool, str, int]]:
-        """シードをNFCカードに書き込む（遅延初期化対応）"""
+        """シードをNFCカードに書き込む"""
         try:
-            # 初期化がまだの場合は再試行
-            if not self._initialized:
-                logger.info("Retrying NFC initialization...")
-                _initialize_global_nfc()
-                self._nfc_module = _global_nfc_instance
-                self._initialized = _global_initialization_successful and (_global_nfc_instance is not None)
-            
-            if not self._initialized:
+            # 書き込み前にNFC初期化
+            if not self._initialize_nfc():
                 return {
                     'success': False,
-                    'error_message': 'NFC module not initialized properly. Please check hardware connection.'
-                }
-            
-            if self._nfc_module is None:
-                return {
-                    'success': False,
-                    'error_message': 'NFC module instance is None. Hardware may not be connected.'
+                    'error_message': 'NFC module initialization failed. Check hardware connection.'
                 }
             
             logger.info("Starting NFC write process...")
             
-            # NFCカードの検出を待つ
+            # NFCカードの検出
             card_uid = self._wait_for_card()
             if not card_uid:
                 return {
@@ -181,11 +89,8 @@ class NFCWriter:
                     'error_message': 'NFC card not detected. Please place card on reader.'
                 }
             
-            # カードの全セクタデータを読み込む
-            sectors_data = self._read_all_sectors()
-            
             # 空きセクタを検索
-            empty_sector = self._find_empty_sector(sectors_data)
+            empty_sector = self._find_empty_sector()
             if empty_sector is None:
                 return {
                     'success': False,
@@ -230,7 +135,7 @@ class NFCWriter:
             return False
 
     def _wait_for_card(self, timeout: int = 30) -> Optional[bytes]:
-        """NFCカードの検出を待つ"""
+        """NFCカード検出待機"""
         logger.info("Waiting for NFC card...")
         start_time = time.time()
         
@@ -241,72 +146,41 @@ class NFCWriter:
                     logger.info(f"NFC card detected: {[hex(i) for i in uid]}")
                     self._current_card_uid = uid
                     return uid
-            except Exception as e:
-                logger.debug(f"Card detection attempt failed: {e}")
+            except Exception:
                 continue
-            
             time.sleep(0.1)
         
         return None
     
-    def _read_all_sectors(self) -> Dict[int, List[bytes]]:
-        """全セクタのデータを読み込む"""
-        sectors_data = {}
+    def _find_empty_sector(self) -> Optional[int]:
+        """空きセクタ検索"""
+        logger.info("Searching for empty sector...")
         
-        for block_number in range(64):
-            sector_number = block_number // 4
-            block_index = block_number % 4
-            
-            if block_index == 3:  # トレーラーブロック
-                continue
-            
-            if sector_number == 0:  # システム領域
-                continue
-            
+        for sector_num in range(1, self.MAX_SECTORS):  # セクタ0は除外
             try:
-                success = self._nfc_module.mifare_classic_authenticate_block(
-                    self._current_card_uid, block_number, 0x60, b'\xFF\xFF\xFF\xFF\xFF\xFF'
-                )
+                management_block_num = sector_num * self.SECTOR_SIZE + 1
                 
-                if not success:
-                    logger.warning(f"Authentication failed for block {block_number}")
+                if not self._authenticate_block(management_block_num):
                     continue
                 
-                block_data = self._nfc_module.mifare_classic_read_block(block_number)
-                if block_data is not None:
-                    if sector_number not in sectors_data:
-                        sectors_data[sector_number] = []
-                    sectors_data[sector_number].append(block_data)
-                    
-                    logger.debug(f"Read block {block_number}: {' '.join('{:02X}'.format(x) for x in block_data)}")
+                management_block = self._nfc_module.mifare_classic_read_block(management_block_num)
+                if management_block is None:
+                    continue
+                
+                # 無効セクタかどうか確認
+                if management_block[:4] != self.VALID_SECTOR_MARKER:
+                    logger.info(f"Found empty sector: {sector_num}")
+                    return sector_num
                 
                 time.sleep(0.1)
                 
-            except Exception as e:
-                logger.debug(f"Failed to read block {block_number}: {e}")
+            except Exception:
                 continue
-        
-        return sectors_data
-    
-    def _find_empty_sector(self, sectors_data: Dict[int, List[bytes]]) -> Optional[int]:
-        """空きセクタを検索する"""
-        for sector_num in range(1, self.MAX_SECTORS):
-            if sector_num not in sectors_data:
-                continue
-            
-            sector_blocks = sectors_data[sector_num]
-            if len(sector_blocks) < 2:
-                continue
-            
-            management_block = sector_blocks[1]
-            
-            if management_block[:4] != self.VALID_SECTOR_MARKER:
-                return sector_num
         
         return None
     
     def _prepare_seed_data(self, seed: Seed) -> Dict[str, Union[bytes, int]]:
-        """シードデータを準備する"""
+        """シードデータ準備"""
         mnemonic = seed.mnemonic_list
         wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
         
@@ -319,29 +193,34 @@ class NFCWriter:
         else:
             raise NFCWriteException(f"Unsupported seed length: {len(mnemonic)}")
         
+        # 単語インデックス取得
         word_indices = []
-        for i, word in enumerate(mnemonic):
-            if i < words_to_encode:
-                try:
-                    index = wordlist.index(word)
-                    word_indices.append(index)
-                except ValueError:
-                    raise NFCWriteException(f"Word '{word}' not found in wordlist")
+        for i in range(words_to_encode):
+            try:
+                index = wordlist.index(mnemonic[i])
+                word_indices.append(index)
+            except ValueError:
+                raise NFCWriteException(f"Word '{mnemonic[i]}' not found in wordlist")
         
-        bit_string = ""
-        for index in word_indices:
-            bit_string += format(index, '011b')
+        # 11ビット × 単語数でビット文字列作成
+        bit_string = "".join(format(index, '011b') for index in word_indices)
         
+        # バイト配列に変換
         compressed_seed = bytearray()
         for i in range(0, len(bit_string), 8):
             byte_str = bit_string[i:i+8].ljust(8, '0')
             compressed_seed.append(int(byte_str, 2))
         
-        checksum_word = mnemonic[-1]
-        checksum_index = wordlist.index(checksum_word)
+        # チェックサム取得
+        checksum_index = wordlist.index(mnemonic[-1])
+        if checksum_index > 255:
+            checksum_index = 255
         
-        fingerprint = seed.get_fingerprint()
-        fingerprint_bytes = binascii.unhexlify(fingerprint)
+        # フィンガープリント取得
+        fingerprint_bytes = binascii.unhexlify(seed.get_fingerprint())
+        
+        logger.info(f"Seed type: {'128bit' if seed_type == self.SEED_128BIT else '256bit'}")
+        logger.info(f"Compressed seed length: {len(compressed_seed)} bytes")
         
         return {
             'seed_type': seed_type,
@@ -351,40 +230,74 @@ class NFCWriter:
         }
     
     def _write_seed_to_sector(self, sector_num: int, seed_data: Dict) -> bool:
-        """セクタにシードデータを書き込む"""
+        """セクタにシードデータ書き込み"""
         try:
-            management_block = bytearray(self.BLOCK_SIZE)
-            management_block[0:4] = self.VALID_SECTOR_MARKER
-            management_block[4] = seed_data['seed_type']
-            management_block[7] = seed_data['checksum']
-            management_block[8:16] = seed_data['fingerprint'][:8]
-            
-            seed_block = bytearray(self.BLOCK_SIZE)
             compressed_seed = seed_data['compressed_seed']
-            seed_block[:len(compressed_seed)] = compressed_seed
+            seed_type = seed_data['seed_type']
             
+            # 1. シードブロック書き込み（2番目のブロック）
+            block2_num = sector_num * self.SECTOR_SIZE + 2
+            seed_block1 = bytearray(16)
+            
+            if compressed_seed:
+                copy_length = min(16, len(compressed_seed))
+                seed_block1[:copy_length] = compressed_seed[:copy_length]
+            
+            if not self._authenticate_block(block2_num):
+                logger.error(f"Authentication failed for block {block2_num}")
+                return False
+            
+            self._nfc_module.mifare_classic_write_block(block2_num, bytes(seed_block1))
+            logger.info(f"Seed block 1 written to block {block2_num}")
+            
+            # 2. 256bitの場合は3番目のブロックも書き込み
+            if seed_type == self.SEED_256BIT and len(compressed_seed) > 16:
+                block3_num = sector_num * self.SECTOR_SIZE + 3
+                
+                if (block3_num % 4) == 3:  # トレーラーブロック衝突チェック
+                    logger.error(f"Block {block3_num} conflicts with sector trailer")
+                    return False
+                
+                seed_block2 = bytearray(16)
+                remaining_data = compressed_seed[16:]
+                
+                if remaining_data:
+                    copy_length = min(16, len(remaining_data))
+                    seed_block2[:copy_length] = remaining_data[:copy_length]
+                
+                if not self._authenticate_block(block3_num):
+                    logger.error(f"Authentication failed for block {block3_num}")
+                    return False
+                
+                self._nfc_module.mifare_classic_write_block(block3_num, bytes(seed_block2))
+                logger.info(f"Seed block 2 written to block {block3_num}")
+            
+            # 3. 管理ブロック書き込み（1番目のブロック）
             management_block_num = sector_num * self.SECTOR_SIZE + 1
-            seed_block_num = sector_num * self.SECTOR_SIZE + 2
+            management_block = bytearray(16)
+            
+            # 管理データ設定
+            management_block[0:4] = self.VALID_SECTOR_MARKER  # [0:3] 有効セクタマーカー
+            management_block[4] = seed_data['seed_type']      # [4] シードタイプ
+            management_block[7] = seed_data['checksum']       # [7] チェックサム
+            
+            # [8:15] フィンガープリント
+            fingerprint_bytes = seed_data['fingerprint']
+            if len(fingerprint_bytes) >= 8:
+                management_block[8:16] = fingerprint_bytes[:8]
+            else:
+                management_block[8:8+len(fingerprint_bytes)] = fingerprint_bytes
             
             if not self._authenticate_block(management_block_num):
-                logger.error(f"Authentication failed for management block {management_block_num}")
+                logger.error(f"Authentication failed for management block")
                 return False
             
             self._nfc_module.mifare_classic_write_block(management_block_num, bytes(management_block))
             logger.info(f"Management block written to block {management_block_num}")
             
-            if not self._authenticate_block(seed_block_num):
-                logger.error(f"Authentication failed for seed block {seed_block_num}")
-                return False
-            
-            self._nfc_module.mifare_classic_write_block(seed_block_num, bytes(seed_block))
-            logger.info(f"Seed block written to block {seed_block_num}")
-            
+            logger.info(f"Sector {sector_num} write completed successfully")
             return True
-            
+        
         except Exception as e:
             logger.error(f"Failed to write to sector {sector_num}: {e}")
             return False
-
-# モジュールインポート時の初期化は行わない（遅延初期化）
-# _initialize_global_nfc()  # <- この行を削除
