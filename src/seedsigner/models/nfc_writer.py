@@ -2,6 +2,7 @@ import logging
 import binascii
 import struct
 import time
+import gc
 from typing import Dict, List, Optional, Union
 from seedsigner.models.seed import Seed
 from seedsigner.models.settings import SettingsConstants
@@ -16,60 +17,73 @@ class NFCWriter:
     """PN532モジュールを使用してNFCカードにシードを書き込むクラス"""
     
     # NFCカードの定数
-    SECTOR_SIZE = 4  # 1セクタあたりのブロック数
-    BLOCK_SIZE = 16  # 1ブロックあたりのバイト数
-    MAX_SECTORS = 16  # 最大セクタ数
+    SECTOR_SIZE = 4
+    BLOCK_SIZE = 16
+    MAX_SECTORS = 16
     
     # 管理ブロックの定数
-    VALID_SECTOR_MARKER = b'\xAA\x55\xFF\x00'  # 有効セクタマーカー
-    SEED_128BIT = 0x00  # 128bitシード
-    SEED_256BIT = 0xFF  # 256bitシード
+    VALID_SECTOR_MARKER = b'\xAA\x55\xFF\x00'
+    SEED_128BIT = 0x00
+    SEED_256BIT = 0xFF
+    
+    # クラス変数でインスタンスを管理
+    _instance = None
+    _nfc_module = None
+    _i2c_instance = None
+    
+    def __new__(cls):
+        """シングルトンパターンでインスタンスを管理"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self):
-        self.nfc_module = None
-        self._initialize_nfc()
+        if self._nfc_module is None:
+            self._initialize_nfc()
     
     def _initialize_nfc(self):
-        """PN532モジュールを初期化（reset処理付き）"""
+        """PN532モジュールを初期化（強化されたreset処理）"""
         try:
+            # 既存のインスタンスをクリア
+            self._cleanup_existing_instances()
+            
             import board
             import busio
             from adafruit_pn532.i2c import PN532_I2C
             
-            # I2C接続でPN532を初期化
-            i2c = busio.I2C(board.SCL, board.SDA)
-            
-            # Reset処理を追加
+            # I2C接続の初期化
             try:
-                # resetパラメータを指定して初期化
-                self.nfc_module = PN532_I2C(i2c, debug=False, irq=None, reset=True)
+                # 既存のI2Cインスタンスがあれば削除
+                if self._i2c_instance is not None:
+                    del self._i2c_instance
+                    time.sleep(0.1)
                 
-                # 明示的にモジュールをリセット
-                self.nfc_module.reset()
-                time.sleep(0.2)  # リセット後の待機時間
+                self._i2c_instance = busio.I2C(board.SCL, board.SDA, frequency=100000)
+                logger.info("I2C interface initialized")
                 
-                # SAM設定
-                self.nfc_module.SAM_configuration()
-                
-                logger.info("PN532 NFC module initialized successfully with reset")
-                
-            except Exception as reset_error:
-                logger.warning(f"Reset failed, trying alternative initialization: {reset_error}")
-                
-                # 代替初期化方法
-                self.nfc_module = PN532_I2C(i2c, debug=False, irq=None)
-                
-                # 複数回試行でSAM設定
-                for attempt in range(3):
-                    try:
-                        time.sleep(0.1 * (attempt + 1))  # 徐々に待機時間を増加
-                        self.nfc_module.SAM_configuration()
-                        logger.info(f"PN532 NFC module initialized successfully (attempt {attempt + 1})")
-                        break
-                    except Exception as e:
-                        if attempt == 2:  # 最後の試行
-                            raise e
-                        logger.warning(f"SAM configuration attempt {attempt + 1} failed: {e}")
+            except Exception as i2c_error:
+                logger.error(f"I2C initialization failed: {i2c_error}")
+                raise NFCWriteException(f"I2C initialization failed: {i2c_error}")
+            
+            # PN532の初期化（複数の方法を試行）
+            initialization_methods = [
+                self._initialize_with_hardware_reset,
+                self._initialize_with_software_reset,
+                self._initialize_basic
+            ]
+            
+            for method in initialization_methods:
+                try:
+                    logger.info(f"Trying initialization method: {method.__name__}")
+                    self._nfc_module = method()
+                    if self._nfc_module is not None:
+                        logger.info("PN532 NFC module initialized successfully")
+                        return
+                except Exception as e:
+                    logger.warning(f"Initialization method {method.__name__} failed: {e}")
+                    continue
+            
+            raise NFCWriteException("All initialization methods failed")
             
         except ImportError:
             logger.error("PN532 library not found. Please install adafruit-circuitpython-pn532")
@@ -77,6 +91,87 @@ class NFCWriter:
         except Exception as e:
             logger.error(f"Failed to initialize PN532: {e}")
             raise NFCWriteException(f"NFC module initialization failed: {e}")
+    
+    def _cleanup_existing_instances(self):
+        """既存のインスタンスをクリーンアップ"""
+        try:
+            if self._nfc_module is not None:
+                del self._nfc_module
+                self._nfc_module = None
+                logger.info("Existing NFC module instance cleaned up")
+            
+            # ガベージコレクションを強制実行
+            gc.collect()
+            time.sleep(0.2)
+            
+        except Exception as e:
+            logger.warning(f"Cleanup failed: {e}")
+    
+    def _initialize_with_hardware_reset(self):
+        """ハードウェアリセットを使用した初期化"""
+        from adafruit_pn532.i2c import PN532_I2C
+        
+        # resetピンを使用してハードウェアリセット
+        nfc_module = PN532_I2C(self._i2c_instance, debug=False, reset=True)
+        
+        # 明示的なハードウェアリセット
+        nfc_module.reset()
+        time.sleep(0.5)  # リセット待機時間を延長
+        
+        # SAM設定
+        nfc_module.SAM_configuration()
+        
+        return nfc_module
+    
+    def _initialize_with_software_reset(self):
+        """ソフトウェアリセットを使用した初期化"""
+        from adafruit_pn532.i2c import PN532_I2C
+        
+        nfc_module = PN532_I2C(self._i2c_instance, debug=False)
+        
+        # ソフトウェアリセットを複数回試行
+        for attempt in range(3):
+            try:
+                nfc_module.reset()
+                time.sleep(0.3)
+                
+                # SAM設定をリセット
+                nfc_module.SAM_configuration()
+                
+                # 設定をクリア
+                nfc_module.power_down()
+                time.sleep(0.1)
+                nfc_module.wake_up()
+                
+                nfc_module.SAM_configuration()
+                
+                return nfc_module
+                
+            except Exception as e:
+                logger.warning(f"Software reset attempt {attempt + 1} failed: {e}")
+                if attempt < 2:
+                    time.sleep(0.5)
+                else:
+                    raise e
+    
+    def _initialize_basic(self):
+        """基本的な初期化"""
+        from adafruit_pn532.i2c import PN532_I2C
+        
+        nfc_module = PN532_I2C(self._i2c_instance, debug=False)
+        
+        # SAM設定を段階的に実行
+        for attempt in range(5):
+            try:
+                time.sleep(0.2 * (attempt + 1))
+                nfc_module.SAM_configuration()
+                return nfc_module
+                
+            except Exception as e:
+                if attempt == 4:
+                    raise e
+                logger.warning(f"Basic initialization attempt {attempt + 1} failed: {e}")
+                continue
     
     def write_seed_to_nfc(self, seed: Seed) -> Dict[str, Union[bool, str, int]]:
         """シードをNFCカードに書き込む
@@ -86,9 +181,6 @@ class NFCWriter:
             
         Returns:
             Dict: 書き込み結果
-                - success: bool - 成功/失敗
-                - sector_num: int - 書き込み先セクタ番号
-                - error_message: str - エラーメッセージ（失敗時）
         """
         try:
             # NFCカードの検出を待つ
@@ -146,7 +238,7 @@ class NFCWriter:
         
         while time.time() - start_time < timeout:
             try:
-                uid = self.nfc_module.read_passive_target(timeout=1)
+                uid = self._nfc_module.read_passive_target(timeout=1)
                 if uid:
                     logger.info(f"NFC card detected: {binascii.hexlify(uid).decode()}")
                     return uid
@@ -178,7 +270,7 @@ class NFCWriter:
                     
                     # 認証してブロックを読み込む
                     if self._authenticate_block(block_num):
-                        block_data = self.nfc_module.mifare_classic_read_block(block_num)
+                        block_data = self._nfc_module.mifare_classic_read_block(block_num)
                         sector_data.append(block_data)
                         # ログ出力
                         logger.debug(f"Read block {block_num}: {binascii.hexlify(block_data).decode()}")
@@ -209,7 +301,7 @@ class NFCWriter:
         try:
             # デフォルトキーで認証を試行
             default_key = b'\xFF\xFF\xFF\xFF\xFF\xFF'
-            return self.nfc_module.mifare_classic_authenticate_block(
+            return self._nfc_module.mifare_classic_authenticate_block(
                 block_num, 0x60, default_key  # 0x60 = Key A
             )
         except Exception as e:
