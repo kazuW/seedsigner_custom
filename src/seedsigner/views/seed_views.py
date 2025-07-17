@@ -2379,10 +2379,12 @@ class SeedExportNFCWriteProcessView(View):
 
         # 処理中メッセージを表示
         self.run_screen(
-            seed_screens.SeedWordsBackupTestPromptScreen,  # 既存のスクリーンを流用
+            DireWarningScreen,  # 修正：適切なスクリーンクラスを使用
             title=_("Writing to NFC"),
+            status_headline=_("Please wait..."),
             text=_("Please wait while writing to NFC card..."),
             show_back_button=False,
+            button_data=[],  # ボタンなしで処理を継続
         )
         
         try:
