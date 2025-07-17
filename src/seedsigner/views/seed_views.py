@@ -348,7 +348,7 @@ class SeedAddPassphraseView(View):
     """
     initial_keyboard: used by the screenshot generator to render each different keyboard layout.
     """
-    def __init__(self, initial_keyboard: str = seed_screens.SeedAddPassphraseScreen.KEYBOARD__LOWERCASE_BUTTON_TEXT):
+    def __init__(self, initial_keyboard: str = seed_screens.SeedAddPassphraseScreen.KEYBOARD__LOWERCASE_BUTTON):
         super().__init__()
         self.initial_keyboard = initial_keyboard
         self.seed = self.controller.storage.get_pending_seed()
@@ -2374,7 +2374,16 @@ class SeedExportNFCWriteProcessView(View):
 
     def run(self):
         from seedsigner.models.nfc_writer import NFCWriter, NFCWriteException
-        from seedsigner.gui.screens.loading_screen import LoadingScreen
+        
+        logger.info(f"Starting NFC write process for seed {self.seed_num}")
+        
+        # 処理中メッセージを表示
+        self.run_screen(
+            seed_screens.SeedWordsBackupTestPromptScreen,  # 既存のスクリーンを流用
+            title=_("Writing to NFC"),
+            text=_("Please wait while writing to NFC card..."),
+            show_back_button=False,
+        )
         
         try:
             # NFCWriterインスタンスを作成
@@ -2383,6 +2392,7 @@ class SeedExportNFCWriteProcessView(View):
             # 書き込み処理の実行
             result = nfc_writer.write_seed_to_nfc(self.seed)
             
+            # 結果に応じて次のViewに遷移
             if result['success']:
                 return Destination(SeedExportNFCWriteSuccessView, view_args={
                     "seed_num": self.seed_num,
@@ -2394,15 +2404,10 @@ class SeedExportNFCWriteProcessView(View):
                     "error_message": result['error_message']
                 })
                 
-        except NFCWriteException as e:
-            return Destination(SeedExportNFCWriteErrorView, view_args={
-                "seed_num": self.seed_num,
-                "error_message": str(e)
-            })
         except Exception as e:
             return Destination(SeedExportNFCWriteErrorView, view_args={
                 "seed_num": self.seed_num,
-                "error_message": f"Unexpected error: {str(e)}"
+                "error_message": f"Error: {str(e)}"
             })
 
 
