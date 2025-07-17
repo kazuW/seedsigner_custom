@@ -12,19 +12,32 @@ class ST7789(object):
         self.width = 240
         self.height = 240
 
-        #Initialize DC RST pin
-        self._dc = 22
-        self._rst = 13
-        self._bl = 18
+        # GPIO設定の前に現在のモードを確認
+        current_mode = GPIO.getmode()
+        if current_mode is None:
+            # モードが設定されていない場合はBCMを使用
+            GPIO.setmode(GPIO.BCM)
+        elif current_mode == GPIO.BOARD:
+            # 既にBOARDモードが設定されている場合は一度クリーンアップ
+            GPIO.cleanup()
+            GPIO.setmode(GPIO.BCM)
+        # 既にBCMモードの場合はそのまま使用
 
-        GPIO.setmode(GPIO.BOARD)
+        # ピン番号をBCMモードに変更（BOARDからBCMへの変換）
+        # BOARD 22 -> BCM 25 (DC pin)
+        # BOARD 13 -> BCM 27 (RST pin)  
+        # BOARD 18 -> BCM 24 (BL pin)
+        self._dc = 25   # BOARD 22 -> BCM 25
+        self._rst = 27  # BOARD 13 -> BCM 27
+        self._bl = 24   # BOARD 18 -> BCM 24
+
         GPIO.setwarnings(False)
-        GPIO.setup(self._dc,GPIO.OUT)
-        GPIO.setup(self._rst,GPIO.OUT)
-        GPIO.setup(self._bl,GPIO.OUT)
+        GPIO.setup(self._dc, GPIO.OUT)
+        GPIO.setup(self._rst, GPIO.OUT)
+        GPIO.setup(self._bl, GPIO.OUT)
         GPIO.output(self._bl, GPIO.HIGH)
 
-        #Initialize SPI
+        # Initialize SPI
         self._spi = spidev.SpiDev(0, 0)
         self._spi.max_speed_hz = 40000000
 

@@ -32,6 +32,18 @@ def _initialize_global_nfc():
         # 遅延インポート（GPIO競合を回避）
         logger.info("Starting delayed import of NFC libraries...")
         
+        # 現在のGPIOモードを確認
+        try:
+            import RPi.GPIO as GPIO
+            current_mode = GPIO.getmode()
+            logger.info(f"Current GPIO mode: {current_mode}")
+            
+            # BCMモードでない場合は警告
+            if current_mode != GPIO.BCM:
+                logger.warning(f"GPIO mode is {current_mode}, NFC requires BCM mode")
+        except Exception as gpio_error:
+            logger.warning(f"GPIO mode check failed: {gpio_error}")
+        
         try:
             import board
             import busio

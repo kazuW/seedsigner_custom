@@ -4,16 +4,6 @@ import argparse
 import logging
 import sys
 
-# NFCライブラリを他のすべてのインポートより前に配置
-try:
-    import board
-    import busio
-    from adafruit_pn532.i2c import PN532_I2C
-    print("NFC libraries pre-imported successfully")
-except ImportError as e:
-    print(f"NFC libraries not available: {e}")
-
-
 from seedsigner.controller import Controller
 
 logger = logging.getLogger(__name__)
