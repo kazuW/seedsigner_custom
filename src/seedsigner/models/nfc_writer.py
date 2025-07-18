@@ -247,9 +247,14 @@ class NFCWriter:
                 logger.error(f"Authentication failed for block {block2_num}")
                 return False
             
+            # seed_block1の値をloggerでデバッグ出力
+            logger.debug(f"Writing seed block 1 to block {block2_num}: {seed_block1.hex()}")
+
             self._nfc_module.mifare_classic_write_block(block2_num, bytes(seed_block1))
             logger.info(f"Seed block 1 written to block {block2_num}")
             
+            time.sleep(0.1)
+
             # 2. 256bitの場合は3番目のブロックも書き込み
             if seed_type == self.SEED_256BIT and len(compressed_seed) > 16:
                 block3_num = sector_num * self.SECTOR_SIZE + 3
@@ -269,9 +274,14 @@ class NFCWriter:
                     logger.error(f"Authentication failed for block {block3_num}")
                     return False
                 
+                # seed_block2の値をloggerでデバッグ出力
+                logger.debug(f"Writing seed block 2 to block {block3_num}: {seed_block2.hex()}")
+
                 self._nfc_module.mifare_classic_write_block(block3_num, bytes(seed_block2))
                 logger.info(f"Seed block 2 written to block {block3_num}")
             
+            time.sleep(0.1)
+
             # 3. 管理ブロック書き込み（1番目のブロック）
             management_block_num = sector_num * self.SECTOR_SIZE + 1
             management_block = bytearray(16)
@@ -292,9 +302,14 @@ class NFCWriter:
                 logger.error(f"Authentication failed for management block")
                 return False
             
+            # 管理blockの値をloggerでデバッグ出力
+            logger.debug(f"Writing management block to block {management_block_num}: {management_block.hex()}")
+
             self._nfc_module.mifare_classic_write_block(management_block_num, bytes(management_block))
             logger.info(f"Management block written to block {management_block_num}")
             
+            time.sleep(0.1)
+
             logger.info(f"Sector {sector_num} write completed successfully")
             return True
         
