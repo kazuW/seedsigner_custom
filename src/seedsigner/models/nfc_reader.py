@@ -572,32 +572,48 @@ class NFCReader:
                 checksum_word = wordlist[checksum]
                 logger.info(f"NFCReader: Stored checksum: {checksum} -> '{checksum_word}'")
                 
-                # 12番目の単語から7ビットエントロピー + 4ビットチェックサムを分解
+                # 最後の単語のビット構造を計算（128bit/256bitで異なる）
+                if num_words == 12:
+                    # 128bit: 12番目の単語 = 7ビットエントロピー + 4ビットチェックサム
+                    entropy_bits_from_last_word = 7
+                    checksum_bits_from_last_word = 4
+                    words_for_entropy_extraction = 11
+                    entropy_bits_from_words = 121  # 11 × 11
+                elif num_words == 24:
+                    # 256bit: 24番目の単語 = 3ビットエントロピー + 8ビットチェックサム
+                    entropy_bits_from_last_word = 3
+                    checksum_bits_from_last_word = 8
+                    words_for_entropy_extraction = 23
+                    entropy_bits_from_words = 253  # 23 × 11
+                else:
+                    logger.error(f"Unsupported word count: {num_words}")
+                    return None
+                
                 checksum_word_bits = f"{checksum:011b}"
-                last_word_entropy_7bits = checksum_word_bits[:7]  # 上位7ビット（エントロピー）
-                last_word_checksum_4bits = checksum_word_bits[7:]  # 下位4ビット（チェックサム）
+                last_word_entropy_bits = checksum_word_bits[:entropy_bits_from_last_word]  # 上位ビット（エントロピー）
+                last_word_checksum_bits = checksum_word_bits[entropy_bits_from_last_word:]  # 下位ビット（チェックサム）
                 
-                logger.info(f"NFCReader: 12番目の単語ビット構造: {checksum_word_bits}")
-                logger.info(f"NFCReader:   エントロピー7ビット: {last_word_entropy_7bits} (decimal: {int(last_word_entropy_7bits, 2)})")
-                logger.info(f"NFCReader:   チェックサム4ビット: {last_word_checksum_4bits} (decimal: {int(last_word_checksum_4bits, 2)})")
+                logger.info(f"NFCReader: {num_words-1}番目の単語ビット構造: {checksum_word_bits}")
+                logger.info(f"NFCReader:   エントロピー{entropy_bits_from_last_word}ビット: {last_word_entropy_bits} (decimal: {int(last_word_entropy_bits, 2)})")
+                logger.info(f"NFCReader:   チェックサム{checksum_bits_from_last_word}ビット: {last_word_checksum_bits} (decimal: {int(last_word_checksum_bits, 2)})")
                 
-                # NFCから11単語を抽出（破損している可能性あり）
+                # NFCからエントロピーを抽出（破損している可能性あり）
                 nfc_entropy_bits = bin(int.from_bytes(compressed_seed, 'big'))[2:].zfill(entropy_bits)
                 logger.info(f"NFCReader: NFC格納エントロピー（{entropy_bits}ビット）: {nfc_entropy_bits}")
                 
-                # 最初の121ビット（11単語分）を抽出
-                entropy_121bits = nfc_entropy_bits[:121]
+                # 最初のN単語分のエントロピーを抽出
+                entropy_from_nfc_words = nfc_entropy_bits[:entropy_bits_from_words]
                 
-                # 12番目の単語の7ビットエントロピーを追加して128ビットエントロピーを再構築
-                complete_entropy_bits = entropy_121bits + last_word_entropy_7bits
+                # 最後の単語のエントロピービットを追加して完全エントロピーを再構築
+                complete_entropy_bits = entropy_from_nfc_words + last_word_entropy_bits
                 logger.info(f"NFCReader: 完全エントロピー再構築:")
-                logger.info(f"NFCReader:   121ビット（11単語）: {entropy_121bits}")
-                logger.info(f"NFCReader:   7ビット（12番目）:  {last_word_entropy_7bits}")
-                logger.info(f"NFCReader:   完全128ビット:      {complete_entropy_bits}")
+                logger.info(f"NFCReader:   {entropy_bits_from_words}ビット（{words_for_entropy_extraction}単語）: {entropy_from_nfc_words}")
+                logger.info(f"NFCReader:   {entropy_bits_from_last_word}ビット（{num_words}番目）:  {last_word_entropy_bits}")
+                logger.info(f"NFCReader:   完全{entropy_bits}ビット:      {complete_entropy_bits}")
                 
-                # 128ビットエントロピーをバイト配列に変換
+                # エントロピーをバイト配列に変換
                 complete_entropy_int = int(complete_entropy_bits, 2)
-                reconstructed_entropy = complete_entropy_int.to_bytes(16, 'big')
+                reconstructed_entropy = complete_entropy_int.to_bytes(expected_bytes, 'big')
                 logger.info(f"NFCReader: 再構築エントロピー: {binascii.hexlify(reconstructed_entropy).decode('utf-8')}")
                 
                 # 再構築されたエントロピーから正しいBIP39ニーモニックを生成
@@ -605,34 +621,46 @@ class NFCReader:
                 correct_mnemonic = correct_mnemonic_string.split()
                 
                 logger.info(f"NFCReader: 修正ニーモニック: {' '.join(correct_mnemonic)}")
-                logger.info(f"NFCReader: 修正12番目の単語: '{correct_mnemonic[-1]}'")
+                logger.info(f"NFCReader: 修正{num_words}番目の単語: '{correct_mnemonic[-1]}'")
                 
-                # === 追加検証：11単語からの12番目の単語復元チェック ===
-                logger.info(f"NFCReader: === 11単語からのチェックサム復元検証 ===")
+                # === 追加検証：N-1単語からの最後の単語復元チェック ===
+                logger.info(f"NFCReader: === {words_for_entropy_extraction}単語からのチェックサム復元検証 ===")
+                logger.info(f"NFCReader: 注意：BIP39仕様により、{words_for_entropy_extraction}単語だけでは{num_words}番目の単語を正確に計算できません")
+                logger.info(f"NFCReader: {num_words}番目の単語 = {entropy_bits_from_last_word}ビットエントロピー + {checksum_bits_from_last_word}ビットチェックサム")
+                logger.info(f"NFCReader: {words_for_entropy_extraction}単語からは{entropy_bits_from_words}ビットエントロピーのみ取得可能、{entropy_bits_from_last_word}ビット不足")
                 
-                # 11単語を抽出
-                first_11_words = correct_mnemonic[:11]
-                logger.info(f"NFCReader: 最初の11単語: {' '.join(first_11_words)}")
+                # N-1単語を抽出
+                first_n_minus_1_words = correct_mnemonic[:words_for_entropy_extraction]
+                logger.info(f"NFCReader: 最初の{words_for_entropy_extraction}単語: {' '.join(first_n_minus_1_words)}")
                 
-                # 11単語から12番目の単語を復元
-                calculated_12th_word_index = self._calculate_12th_word_from_11words(first_11_words)
-                if calculated_12th_word_index is not None:
-                    calculated_12th_word = wordlist[calculated_12th_word_index]
-                    logger.info(f"NFCReader: 11単語から計算された12番目の単語: '{calculated_12th_word}' (index: {calculated_12th_word_index})")
+                # N-1単語から最後の単語を復元（理論的には不可能）
+                calculated_last_word_index = self._calculate_last_word_from_partial_words(first_n_minus_1_words, num_words)
+                if calculated_last_word_index is not None:
+                    calculated_last_word = wordlist[calculated_last_word_index]
+                    logger.info(f"NFCReader: {words_for_entropy_extraction}単語から推定された{num_words}番目の単語: '{calculated_last_word}' (index: {calculated_last_word_index})")
+                    logger.info(f"NFCReader: ⚠ 注意：この値は{entropy_bits_from_last_word}ビットエントロピー不足により不正確の可能性があります")
                     
                     # NFCに保存されたチェックサムと比較
                     logger.info(f"NFCReader: NFCチェックサム: '{checksum_word}' (index: {checksum})")
                     
-                    if calculated_12th_word_index == checksum:
-                        logger.info(f"NFCReader: ✓ 11単語復元チェック成功: 計算値({calculated_12th_word_index}) == NFC保存値({checksum})")
-                        logger.info(f"NFCReader: ✓ NFCデータの整合性が確認されました")
+                    if calculated_last_word_index == checksum:
+                        logger.info(f"NFCReader: ✓ 偶然の一致: 推定値({calculated_last_word_index}) == NFC保存値({checksum})")
+                        logger.info(f"NFCReader: ✓ ただし、これは{entropy_bits_from_last_word}ビットエントロピーが偶然0だった場合のみ")
                     else:
-                        logger.warning(f"NFCReader: ⚠ 11単語復元チェック失敗:")
-                        logger.warning(f"NFCReader:   11単語から計算: {calculated_12th_word_index} -> '{calculated_12th_word}'")
-                        logger.warning(f"NFCReader:   NFC保存値:     {checksum} -> '{checksum_word}'")
-                        logger.warning(f"NFCReader: NFCデータに不整合がある可能性があります")
+                        logger.info(f"NFCReader: ◯ 予期される不一致:")
+                        logger.info(f"NFCReader:   {words_for_entropy_extraction}単語から推定: {calculated_last_word_index} -> '{calculated_last_word}'")
+                        logger.info(f"NFCReader:   NFC保存値:     {checksum} -> '{checksum_word}'")
+                        logger.info(f"NFCReader: ◯ これは正常です - BIP39仕様により{words_for_entropy_extraction}単語では不完全")
+                        logger.info(f"NFCReader: ◯ NFCの管理ブロック保存値が正しいチェックサムです")
                 else:
-                    logger.error(f"NFCReader: ✗ 11単語からの12番目の単語計算に失敗しました")
+                    logger.info(f"NFCReader: ◯ {words_for_entropy_extraction}単語からの{num_words}番目の単語計算は予期通り失敗しました")
+                    logger.info(f"NFCReader: ◯ これは正常な動作です - embit.bip39は不完全なフレーズを拒否")
+                    logger.info(f"NFCReader: ◯ NFCの管理ブロック保存値を信頼します: '{checksum_word}' (index: {checksum})")
+                
+                logger.info(f"NFCReader: === 結論 ===")
+                logger.info(f"NFCReader: ✓ {words_for_entropy_extraction}単語では{num_words}番目の単語を正確に復元することは不可能（BIP39仕様）")
+                logger.info(f"NFCReader: ✓ NFCReader は管理ブロックのチェックサムを使用してエントロピーを再構築")
+                logger.info(f"NFCReader: ✓ この方法により正しいBIP39ニーモニックを復元できます")
                 
                 # 検証：再生成されたチェックサムが元のチェックサムと一致するか確認
                 regenerated_last_word_index = wordlist.index(correct_mnemonic[-1])
@@ -732,40 +760,63 @@ class NFCReader:
             logger.error(f"NFCReader: Error calculating checksum using QR method: {e}")
             return -1
     
-    def _calculate_12th_word_from_11words(self, first_11_words: List[str]) -> Optional[int]:
-        """11単語から12番目の単語のインデックスを計算"""
+    def _calculate_last_word_from_partial_words(self, partial_words: List[str], total_words: int) -> Optional[int]:
+        """N-1単語から最後の単語のインデックスを計算
+        
+        注意：BIP39の仕様上、N-1単語だけでは最後の単語を正確に計算することはできません。
+        
+        128bit (12単語): 12番目の単語は7ビットエントロピー + 4ビットチェックサム
+        256bit (24単語): 24番目の単語は3ビットエントロピー + 8ビットチェックサム
+        
+        N-1単語からは不完全なエントロピーしか得られず、最後の単語のエントロピー部分が不足しています。
+        
+        このメソッドは検証目的でのみ使用され、実際にはNFCの管理ブロックに保存された
+        チェックサムを信頼してエントロピーを再構築します。
+        """
         try:
-            logger.debug(f"NFCReader: Calculating 12th word from 11 words: {first_11_words}")
+            logger.debug(f"NFCReader: Attempting to calculate last word from {len(partial_words)} words: {partial_words}")
+            logger.debug(f"NFCReader: Note: This is theoretically impossible due to BIP39 structure limitations")
             
             from embit import bip39
             
-            # 11単語をBIP39形式の文字列に変換
-            partial_mnemonic_string = " ".join(first_11_words)
+            # N-1単語をBIP39形式の文字列に変換
+            partial_mnemonic_string = " ".join(partial_words)
             
-            # embit.bip39を使用してエントロピーを取得（チェックサム無視）
-            entropy = bip39.mnemonic_to_bytes(partial_mnemonic_string, ignore_checksum=True)
-            logger.debug(f"NFCReader: Entropy from 11 words: {binascii.hexlify(entropy).decode('utf-8')}")
-            
-            # エントロピーから完全なBIP39ニーモニックを生成
-            complete_mnemonic_string = bip39.mnemonic_from_bytes(entropy)
-            complete_mnemonic = complete_mnemonic_string.split()
-            
-            # 12番目の単語を取得
-            if len(complete_mnemonic) >= 12:
-                twelfth_word = complete_mnemonic[11]  # 12番目の単語（0ベース）
+            # embit.bip39はN-1単語だけでは「Invalid recovery phrase」エラーを返します
+            # これは正常な動作です - BIP39の仕様通りです
+            try:
+                # 無効なフレーズでもignore_checksumを使用してエントロピーを取得を試みる
+                entropy = bip39.mnemonic_to_bytes(partial_mnemonic_string, ignore_checksum=True)
+                logger.debug(f"NFCReader: Extracted entropy from {len(partial_words)} words: {binascii.hexlify(entropy).decode('utf-8')}")
                 
-                # 単語をインデックスに変換
-                wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
-                twelfth_word_index = wordlist.index(twelfth_word)
+                # しかし、このエントロピーからBIP39ニーモニックを生成しても
+                # 最後の単語は元の最後の単語とは異なる可能性があります
+                complete_mnemonic_string = bip39.mnemonic_from_bytes(entropy)
+                complete_mnemonic = complete_mnemonic_string.split()
                 
-                logger.debug(f"NFCReader: Calculated 12th word: '{twelfth_word}' -> index {twelfth_word_index}")
-                return twelfth_word_index
-            else:
-                logger.error(f"NFCReader: Complete mnemonic has only {len(complete_mnemonic)} words, expected 12")
+                if len(complete_mnemonic) >= total_words:
+                    last_word = complete_mnemonic[total_words - 1]  # 最後の単語（0ベース）
+                    
+                    # 単語をインデックスに変換
+                    wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
+                    last_word_index = wordlist.index(last_word)
+                    
+                    logger.debug(f"NFCReader: Calculated last word: '{last_word}' -> index {last_word_index}")
+                    logger.debug(f"NFCReader: Warning: This may not match the original last word due to missing entropy bits")
+                    return last_word_index
+                else:
+                    logger.error(f"NFCReader: Complete mnemonic has only {len(complete_mnemonic)} words, expected {total_words}")
+                    return None
+                    
+            except Exception as bip39_error:
+                # これは予期されるエラーです
+                logger.debug(f"NFCReader: Expected BIP39 error with {len(partial_words)} words: {bip39_error}")
+                logger.debug(f"NFCReader: This confirms that {len(partial_words)} words alone cannot generate a valid BIP39 phrase")
+                logger.debug(f"NFCReader: The error 'Invalid recovery phrase' is expected and correct")
                 return None
                 
         except Exception as e:
-            logger.error(f"NFCReader: Error calculating 12th word from 11 words: {e}")
+            logger.error(f"NFCReader: Error in last word calculation process: {e}")
             return None
     
     def _verify_fingerprint(self, seed: Seed, expected_fingerprint: bytes) -> bool:
