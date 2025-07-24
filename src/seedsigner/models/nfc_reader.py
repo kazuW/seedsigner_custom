@@ -586,87 +586,30 @@ class NFCReader:
             return None
     
     def _calculate_checksum_index(self, partial_mnemonic: List[str], total_words: int) -> int:
-        """部分的なニーモニックからチェックサムインデックスを計算"""
+        """部分的なニーモニックからチェックサムインデックスを計算（embitライブラリを使用）"""
         try:
             logger.debug(f"Calculating BIP39 checksum for {len(partial_mnemonic)} words (expecting {total_words} total)")
             logger.debug(f"Input words: {partial_mnemonic}")
             
-            # BIP39の仕様に従ってエントロピーを計算
-            wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
+            # SeedSignerの標準的な方法と同じくembitライブラリを使用
+            from seedsigner.helpers.mnemonic_generation import calculate_checksum
             
-            # 単語をインデックスに変換
-            indices = []
-            for word in partial_mnemonic:
-                try:
-                    index = wordlist.index(word)
-                    indices.append(index)
-                    logger.debug(f"Word '{word}' -> index {index}")
-                except ValueError:
-                    logger.error(f"Word '{word}' not found in wordlist")
-                    return -1
+            # calculate_checksum関数は11語または23語のニーモニックを受け取り、
+            # 適切な最後の単語を計算して完全なニーモニックを返す
+            complete_mnemonic = calculate_checksum(partial_mnemonic, self.settings.get_value(SettingsConstants.WORDLIST_LANGUAGE))
             
-            # インデックスをビット文字列に変換
-            bit_string = ""
-            for index in indices:
-                bit_string += format(index, '011b')
+            # 最後の単語のインデックスを取得
+            wordlist = Seed.get_wordlist(self.settings.get_value(SettingsConstants.WORDLIST_LANGUAGE))
+            last_word = complete_mnemonic[-1]
+            checksum_index = wordlist.index(last_word)
             
-            logger.debug(f"Combined bit string: {bit_string} (length: {len(bit_string)} bits)")
-            
-            # BIP39チェックサム計算の正しい方法：
-            # 1. 11語のビット文字列（121ビット）を16バイトにパディング
-            # 2. そのバイトデータのSHA256を計算
-            # 3. ハッシュの最初の4ビットがチェックサム
-            # 4. 最後の単語は：元の最後のビット（足りない分は0パディング）+ チェックサム4ビット
-            
-            checksum_bits = total_words // 3
-            logger.debug(f"Checksum bits needed: {checksum_bits}")
-            
-            # 11語のビット文字列を128ビット（16バイト）にパディング
-            # 121ビット → 128ビットに拡張（末尾7ビットを0で埋める）
-            padded_bit_string = bit_string.ljust(128, '0')
-            logger.debug(f"Padded bit string to 128 bits: {padded_bit_string}")
-            
-            # 128ビットをバイト配列に変換
-            entropy_bytes = bytearray()
-            for i in range(0, 128, 8):
-                byte_str = padded_bit_string[i:i+8]
-                entropy_bytes.append(int(byte_str, 2))
-            
-            logger.debug(f"128-bit entropy bytes: {[hex(b) for b in entropy_bytes]}")
-            
-            # エントロピーからSHA256を計算
-            import hashlib
-            hash_bytes = hashlib.sha256(bytes(entropy_bytes)).digest()
-            logger.debug(f"SHA256 hash: {hash_bytes.hex()}")
-            
-            # チェックサムビットを抽出（最初の4ビット）
-            hash_bit_string = ''.join(format(b, '08b') for b in hash_bytes)
-            checksum_string = hash_bit_string[:checksum_bits]
-            logger.debug(f"Checksum string from hash: {checksum_string}")
-            
-            # 最後の単語のインデックスを計算
-            # 元の121ビットの最後から11ビット目以降 + チェックサム4ビット = 11ビット
-            remaining_entropy_bits = 11 - checksum_bits  # 7ビット
-            
-            # 元のビット文字列から最後の7ビットを取得
-            if len(bit_string) >= remaining_entropy_bits:
-                # 121ビットの最後の7ビットを取得
-                remaining_entropy = bit_string[-remaining_entropy_bits:]
-            else:
-                # 足りない場合は0でパディング
-                remaining_entropy = bit_string.ljust(remaining_entropy_bits, '0')
-            
-            logger.debug(f"Remaining entropy bits: {remaining_entropy_bits}, remaining entropy: {remaining_entropy}")
-            
-            last_word_bits = remaining_entropy + checksum_string
-            checksum_index = int(last_word_bits, 2)
-            
-            logger.debug(f"Last word bits: {last_word_bits} -> checksum index: {checksum_index}")
+            logger.debug(f"Complete mnemonic calculated by embit: {complete_mnemonic}")
+            logger.debug(f"Last word: {last_word} -> checksum index: {checksum_index}")
             
             return checksum_index
             
         except Exception as e:
-            logger.error(f"Error calculating checksum: {e}")
+            logger.error(f"Error calculating checksum using embit: {e}")
             return -1
     
     def _verify_fingerprint(self, seed: Seed, expected_fingerprint: bytes) -> bool:
