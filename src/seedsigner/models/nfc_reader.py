@@ -607,9 +607,36 @@ class NFCReader:
                 logger.info(f"NFCReader: 修正ニーモニック: {' '.join(correct_mnemonic)}")
                 logger.info(f"NFCReader: 修正12番目の単語: '{correct_mnemonic[-1]}'")
                 
+                # === 追加検証：11単語からの12番目の単語復元チェック ===
+                logger.info(f"NFCReader: === 11単語からのチェックサム復元検証 ===")
+                
+                # 11単語を抽出
+                first_11_words = correct_mnemonic[:11]
+                logger.info(f"NFCReader: 最初の11単語: {' '.join(first_11_words)}")
+                
+                # 11単語から12番目の単語を復元
+                calculated_12th_word_index = self._calculate_12th_word_from_11words(first_11_words)
+                if calculated_12th_word_index is not None:
+                    calculated_12th_word = wordlist[calculated_12th_word_index]
+                    logger.info(f"NFCReader: 11単語から計算された12番目の単語: '{calculated_12th_word}' (index: {calculated_12th_word_index})")
+                    
+                    # NFCに保存されたチェックサムと比較
+                    logger.info(f"NFCReader: NFCチェックサム: '{checksum_word}' (index: {checksum})")
+                    
+                    if calculated_12th_word_index == checksum:
+                        logger.info(f"NFCReader: ✓ 11単語復元チェック成功: 計算値({calculated_12th_word_index}) == NFC保存値({checksum})")
+                        logger.info(f"NFCReader: ✓ NFCデータの整合性が確認されました")
+                    else:
+                        logger.warning(f"NFCReader: ⚠ 11単語復元チェック失敗:")
+                        logger.warning(f"NFCReader:   11単語から計算: {calculated_12th_word_index} -> '{calculated_12th_word}'")
+                        logger.warning(f"NFCReader:   NFC保存値:     {checksum} -> '{checksum_word}'")
+                        logger.warning(f"NFCReader: NFCデータに不整合がある可能性があります")
+                else:
+                    logger.error(f"NFCReader: ✗ 11単語からの12番目の単語計算に失敗しました")
+                
                 # 検証：再生成されたチェックサムが元のチェックサムと一致するか確認
                 regenerated_last_word_index = wordlist.index(correct_mnemonic[-1])
-                logger.info(f"NFCReader: 検証結果:")
+                logger.info(f"NFCReader: === エントロピー再構築検証結果 ===")
                 logger.info(f"NFCReader:   元のチェックサム: {checksum} -> '{checksum_word}'")
                 logger.info(f"NFCReader:   再生成チェックサム: {regenerated_last_word_index} -> '{correct_mnemonic[-1]}'")
                 
@@ -704,6 +731,42 @@ class NFCReader:
         except Exception as e:
             logger.error(f"NFCReader: Error calculating checksum using QR method: {e}")
             return -1
+    
+    def _calculate_12th_word_from_11words(self, first_11_words: List[str]) -> Optional[int]:
+        """11単語から12番目の単語のインデックスを計算"""
+        try:
+            logger.debug(f"NFCReader: Calculating 12th word from 11 words: {first_11_words}")
+            
+            from embit import bip39
+            
+            # 11単語をBIP39形式の文字列に変換
+            partial_mnemonic_string = " ".join(first_11_words)
+            
+            # embit.bip39を使用してエントロピーを取得（チェックサム無視）
+            entropy = bip39.mnemonic_to_bytes(partial_mnemonic_string, ignore_checksum=True)
+            logger.debug(f"NFCReader: Entropy from 11 words: {binascii.hexlify(entropy).decode('utf-8')}")
+            
+            # エントロピーから完全なBIP39ニーモニックを生成
+            complete_mnemonic_string = bip39.mnemonic_from_bytes(entropy)
+            complete_mnemonic = complete_mnemonic_string.split()
+            
+            # 12番目の単語を取得
+            if len(complete_mnemonic) >= 12:
+                twelfth_word = complete_mnemonic[11]  # 12番目の単語（0ベース）
+                
+                # 単語をインデックスに変換
+                wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
+                twelfth_word_index = wordlist.index(twelfth_word)
+                
+                logger.debug(f"NFCReader: Calculated 12th word: '{twelfth_word}' -> index {twelfth_word_index}")
+                return twelfth_word_index
+            else:
+                logger.error(f"NFCReader: Complete mnemonic has only {len(complete_mnemonic)} words, expected 12")
+                return None
+                
+        except Exception as e:
+            logger.error(f"NFCReader: Error calculating 12th word from 11 words: {e}")
+            return None
     
     def _verify_fingerprint(self, seed: Seed, expected_fingerprint: bytes) -> bool:
         """シードのフィンガープリントを検証"""
