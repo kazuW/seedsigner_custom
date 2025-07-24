@@ -237,76 +237,117 @@ class NFCReader:
     
     def _scan_all_sectors(self) -> List[Dict]:
         """全セクタをスキャンして有効なシードを検索"""
+        logger.info("Starting sector scan for valid seeds...")
         valid_seeds = []
+        scanned_sectors = 0
         
         for sector_num in range(1, self.MAX_SECTORS):  # セクタ0は除外
             try:
+                scanned_sectors += 1
+                logger.debug(f"Scanning sector {sector_num} ({scanned_sectors}/{self.MAX_SECTORS-1})")
+                
                 management_block_num = sector_num * self.SECTOR_SIZE + 1
                 
                 if not self._authenticate_block(management_block_num):
+                    logger.debug(f"Authentication failed for management block {management_block_num} in sector {sector_num}")
                     continue
                 
                 management_block = self._nfc_module.mifare_classic_read_block(management_block_num)
                 if management_block is None:
+                    logger.debug(f"Failed to read management block {management_block_num} in sector {sector_num}")
                     continue
+                
+                logger.debug(f"Management block data: {binascii.hexlify(management_block).decode('utf-8')}")
                 
                 # 有効セクタかどうか確認
                 if management_block[:4] == self.VALID_SECTOR_MARKER:
+                    logger.info(f"Valid seed marker found in sector {sector_num}")
+                    
                     seed_type = management_block[4]
                     checksum = management_block[7]
                     fingerprint = management_block[8:16]
                     
+                    logger.debug(f"Seed type: {seed_type} ({'128bit' if seed_type == self.SEED_128BIT else '256bit'})")
+                    logger.debug(f"Checksum index: {checksum}")
+                    logger.debug(f"Fingerprint bytes: {binascii.hexlify(fingerprint).decode('utf-8')}")
+                    
                     # シードブロック1を読み込み
                     block2_num = sector_num * self.SECTOR_SIZE + 2
+                    logger.debug(f"Reading seed block 1 (block {block2_num})")
+                    
                     if not self._authenticate_block(block2_num):
-                        logger.warning(f"Authentication failed for seed block 1 in sector {sector_num}")
+                        logger.warning(f"Authentication failed for seed block 1 (block {block2_num}) in sector {sector_num}")
                         continue
                     
                     seed_block1 = self._nfc_module.mifare_classic_read_block(block2_num)
                     if seed_block1 is None:
-                        logger.warning(f"Failed to read seed block 1 in sector {sector_num}")
+                        logger.warning(f"Failed to read seed block 1 (block {block2_num}) in sector {sector_num}")
                         continue
                     
+                    logger.debug(f"Seed block 1 data: {binascii.hexlify(seed_block1).decode('utf-8')}")
                     compressed_seed = bytearray(seed_block1)
                     
                     # 256bitの場合はシードブロック2も読み込み
                     if seed_type == self.SEED_256BIT:
                         block3_num = sector_num * self.SECTOR_SIZE + 3
+                        logger.debug(f"Reading seed block 2 (block {block3_num}) for 256bit seed")
+                        
                         if not self._authenticate_block(block3_num):
-                            logger.warning(f"Authentication failed for seed block 2 in sector {sector_num}")
+                            logger.warning(f"Authentication failed for seed block 2 (block {block3_num}) in sector {sector_num}")
                             continue
                         
                         seed_block2 = self._nfc_module.mifare_classic_read_block(block3_num)
                         if seed_block2 is None:
-                            logger.warning(f"Failed to read seed block 2 in sector {sector_num}")
+                            logger.warning(f"Failed to read seed block 2 (block {block3_num}) in sector {sector_num}")
                             continue
                         
+                        logger.debug(f"Seed block 2 data: {binascii.hexlify(seed_block2).decode('utf-8')}")
                         compressed_seed.extend(seed_block2)
                     
+                    logger.debug(f"Complete compressed seed data ({len(compressed_seed)} bytes): {binascii.hexlify(compressed_seed).decode('utf-8')}")
+                    
                     # シードからニーモニックを復元
+                    logger.debug(f"Attempting to decompress seed data to mnemonic...")
                     mnemonic = self._decompress_seed_to_mnemonic(compressed_seed, seed_type, checksum)
                     if not mnemonic:
                         logger.warning(f"Failed to decompress seed in sector {sector_num}")
                         continue
                     
+                    logger.debug(f"Successfully decompressed to {len(mnemonic)}-word mnemonic")
+                    logger.debug(f"Mnemonic preview: {mnemonic[0]}...{mnemonic[-1]} (first and last words)")
+                    
                     # フィンガープリントを16進文字列に変換
                     fingerprint_hex = binascii.hexlify(fingerprint).decode('utf-8')
                     
-                    valid_seeds.append({
+                    seed_info = {
                         'sector': sector_num,
                         'fingerprint': fingerprint_hex,
                         'seed_type': '128bit' if seed_type == self.SEED_128BIT else '256bit',
                         'checksum': checksum,
-                        'mnemonic': mnemonic  # ニーモニックを追加
-                    })
+                        'mnemonic': mnemonic
+                    }
                     
-                    logger.info(f"Valid seed found in sector {sector_num}: {fingerprint_hex}")
+                    valid_seeds.append(seed_info)
+                    
+                    logger.info(f"✓ Valid seed found in sector {sector_num}: fingerprint={fingerprint_hex}, type={seed_info['seed_type']}, words={len(mnemonic)}")
+                
+                else:
+                    logger.debug(f"No valid seed marker in sector {sector_num} (marker: {binascii.hexlify(management_block[:4]).decode('utf-8')})")
                 
                 time.sleep(0.1)
                 
             except Exception as e:
-                logger.debug(f"Error reading sector {sector_num}: {e}")
+                logger.warning(f"Error reading sector {sector_num}: {e}")
                 continue
+        
+        logger.info(f"Sector scan completed: {len(valid_seeds)} valid seeds found out of {scanned_sectors} sectors scanned")
+        
+        if valid_seeds:
+            logger.info("Summary of found seeds:")
+            for i, seed in enumerate(valid_seeds, 1):
+                logger.info(f"  {i}. Sector {seed['sector']}: {seed['fingerprint'][:8]}... ({seed['seed_type']})")
+        else:
+            logger.info("No valid seeds found on NFC card")
         
         return valid_seeds
     
