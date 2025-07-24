@@ -396,6 +396,12 @@ def test_11word_checksum_calculation():
         except Exception as e:
             print(f"方法3エラー: {e}")
         
+        return correct_last_word_index
+        
+    except Exception as e:
+        logger.error(f"チェックサム計算テストエラー: {e}")
+        return None
+
 if __name__ == "__main__":
     print("BIP39構造分析とエントロピー再構築テスト")
     print("=" * 50)
