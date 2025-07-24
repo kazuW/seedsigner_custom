@@ -256,6 +256,39 @@ class NFCReader:
                     checksum = management_block[7]
                     fingerprint = management_block[8:16]
                     
+                    # シードブロック1を読み込み
+                    block2_num = sector_num * self.SECTOR_SIZE + 2
+                    if not self._authenticate_block(block2_num):
+                        logger.warning(f"Authentication failed for seed block 1 in sector {sector_num}")
+                        continue
+                    
+                    seed_block1 = self._nfc_module.mifare_classic_read_block(block2_num)
+                    if seed_block1 is None:
+                        logger.warning(f"Failed to read seed block 1 in sector {sector_num}")
+                        continue
+                    
+                    compressed_seed = bytearray(seed_block1)
+                    
+                    # 256bitの場合はシードブロック2も読み込み
+                    if seed_type == self.SEED_256BIT:
+                        block3_num = sector_num * self.SECTOR_SIZE + 3
+                        if not self._authenticate_block(block3_num):
+                            logger.warning(f"Authentication failed for seed block 2 in sector {sector_num}")
+                            continue
+                        
+                        seed_block2 = self._nfc_module.mifare_classic_read_block(block3_num)
+                        if seed_block2 is None:
+                            logger.warning(f"Failed to read seed block 2 in sector {sector_num}")
+                            continue
+                        
+                        compressed_seed.extend(seed_block2)
+                    
+                    # シードからニーモニックを復元
+                    mnemonic = self._decompress_seed_to_mnemonic(compressed_seed, seed_type, checksum)
+                    if not mnemonic:
+                        logger.warning(f"Failed to decompress seed in sector {sector_num}")
+                        continue
+                    
                     # フィンガープリントを16進文字列に変換
                     fingerprint_hex = binascii.hexlify(fingerprint).decode('utf-8')
                     
@@ -263,7 +296,8 @@ class NFCReader:
                         'sector': sector_num,
                         'fingerprint': fingerprint_hex,
                         'seed_type': '128bit' if seed_type == self.SEED_128BIT else '256bit',
-                        'checksum': checksum
+                        'checksum': checksum,
+                        'mnemonic': mnemonic  # ニーモニックを追加
                     })
                     
                     logger.info(f"Valid seed found in sector {sector_num}: {fingerprint_hex}")
@@ -396,6 +430,63 @@ class NFCReader:
             
         except Exception as e:
             logger.error(f"Error reconstructing seed: {e}")
+            return None
+    
+    def _decompress_seed_to_mnemonic(self, compressed_seed: bytes, seed_type: int, checksum: int) -> Optional[List[str]]:
+        """圧縮されたシードデータからニーモニックを復元（パスフレーズなし）"""
+        try:
+            # 128bitか256bitかを判定
+            if seed_type == self.SEED_128BIT:
+                num_words = 12
+                words_to_decode = 11
+            elif seed_type == self.SEED_256BIT:
+                num_words = 24
+                words_to_decode = 23
+            else:
+                logger.error(f"Invalid seed type: {seed_type}")
+                return None
+            
+            # 圧縮されたシードをビット文字列に変換
+            bit_string = ""
+            for byte in compressed_seed:
+                bit_string += format(byte, '08b')
+            
+            # 11ビットずつ区切って単語インデックスを復元
+            word_indices = []
+            for i in range(words_to_decode):
+                start_bit = i * 11
+                end_bit = start_bit + 11
+                if end_bit <= len(bit_string):
+                    word_index = int(bit_string[start_bit:end_bit], 2)
+                    word_indices.append(word_index)
+            
+            # BIP39ワードリストから単語を取得
+            wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
+            mnemonic = []
+            
+            for index in word_indices:
+                if index >= len(wordlist):
+                    logger.error(f"Invalid word index: {index}")
+                    return None
+                mnemonic.append(wordlist[index])
+            
+            # チェックサム単語を追加
+            if checksum >= len(wordlist):
+                logger.error(f"Invalid checksum index: {checksum}")
+                return None
+            mnemonic.append(wordlist[checksum])
+            
+            # チェックサムを検証
+            calculated_checksum_index = self._calculate_checksum_index(mnemonic[:-1], num_words)
+            if calculated_checksum_index != checksum:
+                logger.error(f"Checksum verification failed: expected {checksum}, got {calculated_checksum_index}")
+                return None
+            
+            logger.debug(f"Successfully decompressed {num_words}-word mnemonic")
+            return mnemonic
+            
+        except Exception as e:
+            logger.error(f"Error decompressing seed to mnemonic: {e}")
             return None
     
     def _calculate_checksum_index(self, partial_mnemonic: List[str], total_words: int) -> int:
