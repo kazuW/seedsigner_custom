@@ -210,11 +210,27 @@ class NFCReader:
             if uid is None:
                 uid = self._current_card_uid
             
-            return self._nfc_module.mifare_classic_authenticate_block(
+            # 認証を試行（Key Aで試行）
+            auth_result = self._nfc_module.mifare_classic_authenticate_block(
                 uid, block_num, 0x60, default_key
             )
+            
+            if not auth_result:
+                # Key Aで失敗した場合、Key Bで試行
+                logger.debug(f"Key A authentication failed for block {block_num}, trying Key B")
+                auth_result = self._nfc_module.mifare_classic_authenticate_block(
+                    uid, block_num, 0x61, default_key
+                )
+            
+            if auth_result:
+                logger.debug(f"Authentication successful for block {block_num}")
+            else:
+                logger.debug(f"Authentication failed for block {block_num} with both keys")
+            
+            return auth_result
+            
         except Exception as e:
-            logger.debug(f"Authentication failed for block {block_num}: {e}")
+            logger.debug(f"Authentication exception for block {block_num}: {e}")
             return False
     
     def _wait_for_card(self, timeout: int = 30) -> Optional[bytes]:
@@ -240,6 +256,7 @@ class NFCReader:
         logger.info("Starting sector scan for valid seeds...")
         valid_seeds = []
         scanned_sectors = 0
+        consecutive_auth_failures = 0
         
         for sector_num in range(1, self.MAX_SECTORS):  # セクタ0は除外
             try:
@@ -250,7 +267,27 @@ class NFCReader:
                 
                 if not self._authenticate_block(management_block_num):
                     logger.debug(f"Authentication failed for management block {management_block_num} in sector {sector_num}")
+                    consecutive_auth_failures += 1
+                    
+                    # 連続で認証失敗が3回以上の場合、カードの再検出を試行
+                    if consecutive_auth_failures >= 3:
+                        logger.warning(f"Multiple authentication failures detected, attempting card reconnection...")
+                        time.sleep(0.2)
+                        # カードの再検出を試行
+                        uid = self._wait_for_card(timeout=2)
+                        if uid:
+                            self._current_card_uid = uid
+                            consecutive_auth_failures = 0
+                            logger.info("Card reconnected successfully")
+                        else:
+                            logger.warning("Card reconnection failed")
+                    
+                    # 認証失敗時は短時間待機してから次のセクタへ
+                    time.sleep(0.05)
                     continue
+                
+                # 認証成功時はカウンタリセット
+                consecutive_auth_failures = 0
                 
                 management_block = self._nfc_module.mifare_classic_read_block(management_block_num)
                 if management_block is None:
@@ -280,6 +317,8 @@ class NFCReader:
                     
                     if not self._authenticate_block(block2_num):
                         logger.warning(f"Authentication failed for seed block 1 (block {block2_num}) in sector {sector_num}")
+                        # 認証失敗時は短時間待機してから次のセクタへ
+                        time.sleep(0.05)
                         continue
                     
                     seed_block1 = self._nfc_module.mifare_classic_read_block(block2_num)
@@ -297,6 +336,8 @@ class NFCReader:
                         
                         if not self._authenticate_block(block3_num):
                             logger.warning(f"Authentication failed for seed block 2 (block {block3_num}) in sector {sector_num}")
+                            # 認証失敗時は短時間待機してから次のセクタへ
+                            time.sleep(0.05)
                             continue
                         
                         seed_block2 = self._nfc_module.mifare_classic_read_block(block3_num)
