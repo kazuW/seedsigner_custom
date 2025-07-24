@@ -596,10 +596,11 @@ class NFCReader:
             
             # calculate_checksum関数は11語または23語のニーモニックを受け取り、
             # 適切な最後の単語を計算して完全なニーモニックを返す
-            complete_mnemonic = calculate_checksum(partial_mnemonic, self.settings.get_value(SettingsConstants.WORDLIST_LANGUAGE))
+            # デフォルトは英語ワードリスト
+            complete_mnemonic = calculate_checksum(partial_mnemonic, SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
             
             # 最後の単語のインデックスを取得
-            wordlist = Seed.get_wordlist(self.settings.get_value(SettingsConstants.WORDLIST_LANGUAGE))
+            wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
             last_word = complete_mnemonic[-1]
             checksum_index = wordlist.index(last_word)
             
