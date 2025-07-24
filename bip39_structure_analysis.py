@@ -122,65 +122,109 @@ def simulate_nfc_storage_corruption():
     if not analysis:
         return
     
-    # NFCに保存されるデータをシミュレート
-    # 問題：最初の128ビットのみ保存され、12番目の単語の7ビットエントロピーが失われる
-    nfc_stored_entropy = analysis['test_entropy']  # 16バイト（128ビット）
-    nfc_stored_checksum = analysis['last_word_index']  # 管理ブロックに保存されたチェックサム
+    print(f"元のエントロピー（128ビット）: {binascii.hexlify(analysis['test_entropy']).decode('utf-8')}")
+    print(f"元のニーモニック: {' '.join(analysis['mnemonic'])}")
+    print(f"元の12番目の単語: '{analysis['mnemonic'][-1]}' -> index {analysis['last_word_index']}")
     
-    print(f"NFCに保存されたエントロピー（16バイト）: {binascii.hexlify(nfc_stored_entropy).decode('utf-8')}")
-    print(f"NFCに保存されたチェックサム：           {nfc_stored_checksum}")
+    # NFCストレージの問題をシミュレート
+    # 実際の問題：最後のバイトが0x53→0x00に破損
+    original_entropy = analysis['test_entropy']
+    corrupted_entropy = bytearray(original_entropy)
+    corrupted_entropy[-1] = 0x00  # 最後のバイトを0x00に変更（0xF0 → 0x00）
     
-    # NFCから読み込んだデータで単語を再構築
+    print(f"\n=== 破損シミュレーション ===")
+    print(f"破損エントロピー（128ビット）: {binascii.hexlify(corrupted_entropy).decode('utf-8')}")
+    
     try:
         from embit import bip39
         
-        # 最初の11単語を16バイトのエントロピーから抽出
-        entropy_bits = bin(int.from_bytes(nfc_stored_entropy, 'big'))[2:].zfill(128)
-        print(f"\nNFCエントロピービット（128ビット）: {entropy_bits}")
+        # 破損エントロピーからニーモニックを生成
+        corrupted_mnemonic_string = bip39.mnemonic_from_bytes(bytes(corrupted_entropy))
+        corrupted_mnemonic = corrupted_mnemonic_string.split()
         
-        # 11単語を抽出
-        nfc_word_indices = []
-        nfc_words = []
+        print(f"破損ニーモニック:             {' '.join(corrupted_mnemonic)}")
+        print(f"破損12番目の単語:           '{corrupted_mnemonic[-1]}'")
+        
         wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
+        corrupted_last_word_index = wordlist.index(corrupted_mnemonic[-1])
+        print(f"破損チェックサムインデックス:   {corrupted_last_word_index}")
         
+        # NFCに保存されるデータ（破損エントロピー + 元のチェックサム）
+        nfc_stored_entropy = bytes(corrupted_entropy)  # 破損した16バイト
+        nfc_stored_checksum = analysis['last_word_index']  # 元の正しいチェックサム
+        
+        print(f"\n=== NFC保存データ ===")
+        print(f"NFC保存エントロピー: {binascii.hexlify(nfc_stored_entropy).decode('utf-8')}")
+        print(f"NFC保存チェックサム: {nfc_stored_checksum} -> '{wordlist[nfc_stored_checksum]}'")
+        
+        # === 修正ロジック ===
+        print(f"\n=== 修正ロジック適用 ===")
+        
+        # 1. NFCエントロピーの11単語を抽出
+        entropy_bits = bin(int.from_bytes(nfc_stored_entropy, 'big'))[2:].zfill(128)
+        
+        nfc_words = []
         for i in range(11):
             start_bit = i * 11
             end_bit = start_bit + 11
             word_bits = entropy_bits[start_bit:end_bit]
             word_index = int(word_bits, 2)
-            nfc_word_indices.append(word_index)
             nfc_words.append(wordlist[word_index])
         
-        print(f"NFCから復元した11単語: {' '.join(nfc_words)}")
+        print(f"NFCから抽出した11単語: {' '.join(nfc_words)}")
         
-        # 11単語から正しいBIP39ニーモニックを生成
-        partial_mnemonic_string = " ".join(nfc_words)
-        correct_entropy = bip39.mnemonic_to_bytes(partial_mnemonic_string, ignore_checksum=True)
-        correct_mnemonic_string = bip39.mnemonic_from_bytes(correct_entropy)
+        # 2. 11単語から121ビットエントロピーを抽出
+        entropy_bits_121 = ""
+        for i in range(11):
+            start_bit = i * 11
+            end_bit = start_bit + 11
+            word_bits = entropy_bits[start_bit:end_bit]
+            entropy_bits_121 += word_bits
+        
+        print(f"11単語からの121ビット: {entropy_bits_121}")
+        
+        # 3. NFCチェックサムから12番目の単語の7ビットエントロピーを抽出
+        checksum_word_index = nfc_stored_checksum
+        checksum_word_bits = f"{checksum_word_index:011b}"
+        last_word_entropy_bits = checksum_word_bits[:7]  # 上位7ビット
+        
+        print(f"チェックサム単語ビット: {checksum_word_bits}")
+        print(f"12番目の単語のエントロピー7ビット: {last_word_entropy_bits}")
+        
+        # 4. 完全な128ビットエントロピーを再構築
+        complete_entropy_bits = entropy_bits_121 + last_word_entropy_bits
+        complete_entropy_int = int(complete_entropy_bits, 2)
+        reconstructed_entropy = complete_entropy_int.to_bytes(16, 'big')
+        
+        print(f"再構築エントロピー: {binascii.hexlify(reconstructed_entropy).decode('utf-8')}")
+        
+        # 5. 再構築されたエントロピーから正しいニーモニックを生成
+        correct_mnemonic_string = bip39.mnemonic_from_bytes(reconstructed_entropy)
         correct_mnemonic = correct_mnemonic_string.split()
         
-        print(f"\n=== 修正結果 ===")
-        print(f"11単語から再構築したエントロピー: {binascii.hexlify(correct_entropy).decode('utf-8')}")
-        print(f"正しいBIP39ニーモニック:         {' '.join(correct_mnemonic)}")
-        print(f"正しい12番目の単語:             '{correct_mnemonic[-1]}'")
-        
-        # 比較
-        correct_last_word_index = wordlist.index(correct_mnemonic[-1])
-        print(f"\n=== 比較結果 ===")
-        print(f"元のニーモニック:   {' '.join(analysis['mnemonic'])}")
         print(f"修正ニーモニック:   {' '.join(correct_mnemonic)}")
-        print(f"一致: {analysis['mnemonic'] == correct_mnemonic}")
-        print(f"\n元の12番目の単語:   '{analysis['mnemonic'][-1]}' (index: {analysis['last_word_index']})")
-        print(f"修正12番目の単語:   '{correct_mnemonic[-1]}' (index: {correct_last_word_index})")
-        print(f"NFC保存チェックサム: {nfc_stored_checksum}")
+        print(f"修正12番目の単語: '{correct_mnemonic[-1]}'")
+        
+        # 6. 検証
+        print(f"\n=== 修正結果検証 ===")
+        print(f"元のエントロピー: {binascii.hexlify(analysis['test_entropy']).decode('utf-8')}")
+        print(f"修正エントロピー: {binascii.hexlify(reconstructed_entropy).decode('utf-8')}")
+        print(f"エントロピー一致: {analysis['test_entropy'] == reconstructed_entropy}")
+        
+        print(f"\n元のニーモニック: {' '.join(analysis['mnemonic'])}")
+        print(f"修正ニーモニック: {' '.join(correct_mnemonic)}")
+        print(f"ニーモニック一致: {analysis['mnemonic'] == correct_mnemonic}")
         
         if analysis['mnemonic'] == correct_mnemonic:
             print("\n✓ 修正ロジックは正常に動作しています")
+            print("✓ NFCの破損エントロピーから正しいニーモニックを復元できました")
         else:
             print("\n✗ 修正ロジックに問題があります")
             
     except Exception as e:
         logger.error(f"NFCシミュレーションエラー: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     print("BIP39構造分析とエントロピー再構築テスト")
