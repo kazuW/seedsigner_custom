@@ -2515,6 +2515,9 @@ class SeedReadNFCView(View):
             # 読み込み処理の実行
             result = nfc_reader.read_seeds_from_nfc()
             
+            # 結果をログに出力
+            logger.info(f"NFC読み込み結果: {result}")
+
             if result['success']:
                 if result['seeds']:
                     return Destination(SeedSelectFromNFCView, view_args={"seeds": result['seeds']})
@@ -2639,7 +2642,7 @@ class SeedLoadFromNFCProcessView(View):
         self.passphrase = passphrase
 
     def run(self):
-        from seedsigner.models.nfc_reader import NFCReader, NFCReadException
+        from seedsigner.models.seed import Seed
         from seedsigner.gui.screens.screen import LoadingScreenThread
         
         # 読み込み中メッセージを表示
@@ -2647,30 +2650,20 @@ class SeedLoadFromNFCProcessView(View):
         loading_screen.start()
         
         try:
-            # NFCReaderインスタンスを作成
-            nfc_reader = NFCReader()
+            # seed_infoから既に読み込まれたシードデータを使用
+            mnemonic = self.seed_info['mnemonic']
             
-            # 指定されたセクタからシードをロード
-            result = nfc_reader.load_seed_from_nfc(
-                sector_num=self.seed_info['sector'],
-                passphrase=self.passphrase
-            )
+            # Seedオブジェクトを作成
+            seed = Seed(mnemonic=mnemonic, passphrase=self.passphrase)
             
-            if result['success']:
-                seed = result['seed']
-                
-                # シードをコントローラーのstorageに追加
-                self.controller.storage.set_pending_seed(seed)
-                seed_num = self.controller.storage.finalize_pending_seed()
-                
-                return Destination(SeedLoadFromNFCSuccessView, view_args={
-                    "seed_num": seed_num,
-                    "fingerprint": self.seed_info['fingerprint'][:8]
-                })
-            else:
-                return Destination(SeedLoadFromNFCErrorView, view_args={
-                    "error_message": result['error_message']
-                })
+            # シードをコントローラーのstorageに追加
+            self.controller.storage.set_pending_seed(seed)
+            seed_num = self.controller.storage.finalize_pending_seed()
+            
+            return Destination(SeedLoadFromNFCSuccessView, view_args={
+                "seed_num": seed_num,
+                "fingerprint": self.seed_info['fingerprint'][:8]
+            })
                 
         except Exception as e:
             return Destination(SeedLoadFromNFCErrorView, view_args={
