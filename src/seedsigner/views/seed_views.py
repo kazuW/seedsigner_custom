@@ -4,6 +4,7 @@ import time
 
 from binascii import hexlify
 from gettext import gettext as _
+from typing import List, Dict
 
 from embit.descriptor import Descriptor
 
@@ -75,6 +76,7 @@ class SeedSelectSeedView(View):
     TYPE_12WORD = ButtonOption("Enter 12-word seed", FontAwesomeIconConstants.KEYBOARD)
     TYPE_24WORD = ButtonOption("Enter 24-word seed", FontAwesomeIconConstants.KEYBOARD)
     TYPE_ELECTRUM = ButtonOption("Enter Electrum seed", FontAwesomeIconConstants.KEYBOARD)
+    IMPORT_NFC = ButtonOption("Import from NFC", SeedSignerIconConstants.QRCODE)
 
 
     def __init__(self, flow: str):
@@ -114,6 +116,9 @@ class SeedSelectSeedView(View):
 
         if self.settings.get_value(SettingsConstants.SETTING__ELECTRUM_SEEDS) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.TYPE_ELECTRUM)
+        
+        # NFC機能を追加
+        button_data.append(self.IMPORT_NFC)
 
         selected_menu_num = self.run_screen(
             seed_screens.SeedSelectSeedScreen,
@@ -153,6 +158,9 @@ class SeedSelectSeedView(View):
         elif button_data[selected_menu_num] == self.TYPE_ELECTRUM:
             return Destination(SeedElectrumMnemonicStartView)
 
+        elif button_data[selected_menu_num] == self.IMPORT_NFC:
+            return Destination(SeedImportNFCView)
+
 
 
 """****************************************************************************
@@ -163,6 +171,7 @@ class LoadSeedView(View):
     TYPE_12WORD = ButtonOption("Enter 12-word seed", FontAwesomeIconConstants.KEYBOARD)
     TYPE_24WORD = ButtonOption("Enter 24-word seed", FontAwesomeIconConstants.KEYBOARD)
     TYPE_ELECTRUM = ButtonOption("Enter Electrum seed", FontAwesomeIconConstants.KEYBOARD)
+    IMPORT_NFC = ButtonOption("Import from NFC", SeedSignerIconConstants.QRCODE)
     CREATE = ButtonOption("Create a seed", SeedSignerIconConstants.PLUS)
 
     def run(self):
@@ -175,6 +184,8 @@ class LoadSeedView(View):
         if self.settings.get_value(SettingsConstants.SETTING__ELECTRUM_SEEDS) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.TYPE_ELECTRUM)
         
+        # NFC機能を追加
+        button_data.append(self.IMPORT_NFC)
         button_data.append(self.CREATE)
 
         selected_menu_num = self.run_screen(
@@ -201,6 +212,9 @@ class LoadSeedView(View):
 
         elif button_data[selected_menu_num] == self.TYPE_ELECTRUM:
             return Destination(SeedElectrumMnemonicStartView)
+
+        elif button_data[selected_menu_num] == self.IMPORT_NFC:
+            return Destination(SeedImportNFCView)
 
         elif button_data[selected_menu_num] == self.CREATE:
             from .tools_views import ToolsMenuView
@@ -2460,3 +2474,409 @@ class SeedExportNFCWriteErrorView(View):
             return Destination(SeedExportNFCWriteView, view_args={"seed_num": self.seed_num})
         elif button_data[selected_menu_num] == self.CANCEL:
             return Destination(SeedOptionsView, view_args={"seed_num": self.seed_num})
+
+
+"""****************************************************************************
+    Import from NFC flow
+****************************************************************************"""
+class SeedImportNFCView(View):
+    READ_NFC = ButtonOption("Read NFC card", SeedSignerIconConstants.QRCODE)
+
+    def run(self):
+        button_data = [self.READ_NFC]
+        
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title=_("Import from NFC"),
+            button_data=button_data,
+            is_bottom_list=True,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+
+        elif button_data[selected_menu_num] == self.READ_NFC:
+            return Destination(SeedReadNFCView)
+
+
+class SeedReadNFCView(View):
+    def run(self):
+        from seedsigner.models.nfc_reader import NFCReader, NFCReadException
+        from seedsigner.gui.screens.screen import LoadingScreenThread
+        
+        # 読み込み中メッセージを表示
+        loading_screen = LoadingScreenThread(text=_("Scanning NFC card for seeds..."))
+        loading_screen.start()
+        
+        try:
+            # NFCReaderインスタンスを作成
+            nfc_reader = NFCReader()
+            
+            # 読み込み処理の実行
+            result = nfc_reader.read_seeds_from_nfc()
+            
+            if result['success']:
+                if result['seeds']:
+                    return Destination(SeedSelectFromNFCView, view_args={"seeds": result['seeds']})
+                else:
+                    return Destination(SeedReadNFCNoSeedsView)
+            else:
+                return Destination(SeedReadNFCErrorView, view_args={"error_message": result['error_message']})
+                
+        except Exception as e:
+            return Destination(SeedReadNFCErrorView, view_args={"error_message": f"Error: {str(e)}"})
+        
+        finally:
+            loading_screen.stop()
+
+
+class SeedSelectFromNFCView(View):
+    def __init__(self, seeds: List[Dict]):
+        super().__init__()
+        self.seeds = seeds
+
+    def run(self):
+        button_data = []
+        
+        # 各シードに対してボタンを作成
+        for seed in self.seeds:
+            fingerprint = seed['fingerprint'][:8]  # 最初の8文字のみ表示
+            seed_type = seed['seed_type']
+            button_data.append(ButtonOption(f"{fingerprint} ({seed_type})", SeedSignerIconConstants.FINGERPRINT))
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title=_("Select Seed from NFC"),
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+
+        selected_seed = self.seeds[selected_menu_num]
+        return Destination(SeedNFCSeedOptionsView, view_args={
+            "seed_info": selected_seed
+        })
+
+
+class SeedNFCSeedOptionsView(View):
+    LOAD_SEED = ButtonOption("Load seed")
+    DELETE_SEED = ButtonOption("Delete seed from NFC", button_label_color="red")
+
+    def __init__(self, seed_info: Dict):
+        super().__init__()
+        self.seed_info = seed_info
+
+    def run(self):
+        button_data = [self.LOAD_SEED, self.DELETE_SEED]
+        
+        fingerprint = self.seed_info['fingerprint'][:8]
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title=f"Seed {fingerprint}",
+            button_data=button_data,
+            is_bottom_list=True,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+
+        elif button_data[selected_menu_num] == self.LOAD_SEED:
+            return Destination(SeedLoadFromNFCView, view_args={"seed_info": self.seed_info})
+        
+        elif button_data[selected_menu_num] == self.DELETE_SEED:
+            return Destination(SeedDeleteFromNFCConfirmView, view_args={"seed_info": self.seed_info})
+
+
+class SeedLoadFromNFCView(View):
+    def __init__(self, seed_info: Dict):
+        super().__init__()
+        self.seed_info = seed_info
+
+    def run(self):
+        passphrase = ""
+        
+        # BIP39 passphrase が required の場合は入力画面を表示
+        if self.settings.get_value(SettingsConstants.SETTING__PASSPHRASE) == SettingsConstants.OPTION__REQUIRED:
+            # パスフレーズ入力画面へ
+            return Destination(SeedNFCPassphraseView, view_args={"seed_info": self.seed_info})
+        
+        # パスフレーズなしでシードロード
+        return Destination(SeedLoadFromNFCProcessView, view_args={
+            "seed_info": self.seed_info,
+            "passphrase": passphrase
+        })
+
+
+class SeedNFCPassphraseView(View):
+    def __init__(self, seed_info: Dict):
+        super().__init__()
+        self.seed_info = seed_info
+
+    def run(self):
+        ret_dict = self.run_screen(
+            seed_screens.SeedAddPassphraseScreen,
+            passphrase="",
+            title=_("BIP-39 Passphrase"),
+            initial_keyboard=seed_screens.SeedAddPassphraseScreen.KEYBOARD__LOWERCASE_BUTTON_TEXT,
+        )
+
+        if "is_back_button" in ret_dict:
+            return Destination(BackStackView)
+        
+        passphrase = ret_dict["passphrase"]
+        return Destination(SeedLoadFromNFCProcessView, view_args={
+            "seed_info": self.seed_info,
+            "passphrase": passphrase
+        })
+
+
+class SeedLoadFromNFCProcessView(View):
+    def __init__(self, seed_info: Dict, passphrase: str = ""):
+        super().__init__()
+        self.seed_info = seed_info
+        self.passphrase = passphrase
+
+    def run(self):
+        from seedsigner.models.nfc_reader import NFCReader, NFCReadException
+        from seedsigner.gui.screens.screen import LoadingScreenThread
+        
+        # 読み込み中メッセージを表示
+        loading_screen = LoadingScreenThread(text=_("Loading seed from NFC card..."))
+        loading_screen.start()
+        
+        try:
+            # NFCReaderインスタンスを作成
+            nfc_reader = NFCReader()
+            
+            # 指定されたセクタからシードをロード
+            result = nfc_reader.load_seed_from_nfc(
+                sector_num=self.seed_info['sector'],
+                passphrase=self.passphrase
+            )
+            
+            if result['success']:
+                seed = result['seed']
+                
+                # シードをコントローラーのstorageに追加
+                self.controller.storage.set_pending_seed(seed)
+                seed_num = self.controller.storage.finalize_pending_seed()
+                
+                return Destination(SeedLoadFromNFCSuccessView, view_args={
+                    "seed_num": seed_num,
+                    "fingerprint": self.seed_info['fingerprint'][:8]
+                })
+            else:
+                return Destination(SeedLoadFromNFCErrorView, view_args={
+                    "error_message": result['error_message']
+                })
+                
+        except Exception as e:
+            return Destination(SeedLoadFromNFCErrorView, view_args={
+                "error_message": f"Error: {str(e)}"
+            })
+        
+        finally:
+            loading_screen.stop()
+
+
+class SeedLoadFromNFCSuccessView(View):
+    def __init__(self, seed_num: int, fingerprint: str):
+        super().__init__()
+        self.seed_num = seed_num
+        self.fingerprint = fingerprint
+
+    def run(self):
+        from seedsigner.gui.screens.screen import LargeIconStatusScreen
+        
+        self.run_screen(
+            LargeIconStatusScreen,
+            title=_("Seed Loaded"),
+            status_headline=_("Success!"),
+            text=_("Seed {} successfully loaded from NFC").format(self.fingerprint),
+            show_back_button=False,
+            button_data=[ButtonOption("OK")]
+        )
+
+        return Destination(SeedOptionsView, view_args={"seed_num": self.seed_num}, clear_history=True)
+
+
+class SeedDeleteFromNFCConfirmView(View):
+    DELETE = ButtonOption("Delete", button_label_color="red")
+    CANCEL = ButtonOption("Cancel")
+
+    def __init__(self, seed_info: Dict):
+        super().__init__()
+        self.seed_info = seed_info
+
+    def run(self):
+        button_data = [self.DELETE, self.CANCEL]
+        
+        fingerprint = self.seed_info['fingerprint'][:8]
+        selected_menu_num = self.run_screen(
+            WarningScreen,
+            title=_("Delete Seed?"),
+            status_headline=None,
+            text=_("Delete seed {} from NFC card?").format(fingerprint),
+            show_back_button=False,
+            button_data=button_data,
+        )
+
+        if button_data[selected_menu_num] == self.DELETE:
+            return Destination(SeedDeleteFromNFCProcessView, view_args={"seed_info": self.seed_info})
+        else:
+            return Destination(BackStackView)
+
+
+class SeedDeleteFromNFCProcessView(View):
+    def __init__(self, seed_info: Dict):
+        super().__init__()
+        self.seed_info = seed_info
+
+    def run(self):
+        from seedsigner.models.nfc_reader import NFCReader, NFCReadException
+        from seedsigner.gui.screens.screen import LoadingScreenThread
+        
+        # 削除中メッセージを表示
+        loading_screen = LoadingScreenThread(text=_("Deleting seed from NFC card..."))
+        loading_screen.start()
+        
+        try:
+            # NFCReaderインスタンスを作成
+            nfc_reader = NFCReader()
+            
+            # 指定されたセクタからシードを削除
+            result = nfc_reader.delete_seed_from_nfc(self.seed_info['sector'])
+            
+            if result['success']:
+                return Destination(SeedDeleteFromNFCSuccessView, view_args={
+                    "fingerprint": self.seed_info['fingerprint'][:8]
+                })
+            else:
+                return Destination(SeedDeleteFromNFCErrorView, view_args={
+                    "error_message": result['error_message']
+                })
+                
+        except Exception as e:
+            return Destination(SeedDeleteFromNFCErrorView, view_args={
+                "error_message": f"Error: {str(e)}"
+            })
+        
+        finally:
+            loading_screen.stop()
+
+
+class SeedDeleteFromNFCSuccessView(View):
+    def __init__(self, fingerprint: str):
+        super().__init__()
+        self.fingerprint = fingerprint
+
+    def run(self):
+        from seedsigner.gui.screens.screen import LargeIconStatusScreen
+        
+        self.run_screen(
+            LargeIconStatusScreen,
+            title=_("Seed Deleted"),
+            status_headline=_("Success!"),
+            text=_("Seed {} successfully deleted from NFC").format(self.fingerprint),
+            show_back_button=False,
+            button_data=[ButtonOption("OK")]
+        )
+
+        return Destination(SeedsMenuView, clear_history=True)
+
+
+class SeedReadNFCNoSeedsView(View):
+    def run(self):
+        self.run_screen(
+            WarningScreen,
+            title=_("No Seeds Found"),
+            status_headline=None,
+            text=_("No valid seeds found on NFC card."),
+            show_back_button=False,
+            button_data=[ButtonOption("OK")]
+        )
+
+        return Destination(SeedImportNFCView, clear_history=True)
+
+
+class SeedReadNFCErrorView(View):
+    RETRY = ButtonOption("Retry")
+    CANCEL = ButtonOption("Cancel")
+
+    def __init__(self, error_message: str):
+        super().__init__()
+        self.error_message = error_message
+
+    def run(self):
+        button_data = [self.RETRY, self.CANCEL]
+        
+        selected_menu_num = self.run_screen(
+            DireWarningScreen,
+            title=_("NFC Read Error"),
+            status_icon_name=SeedSignerIconConstants.ERROR,
+            status_headline=_("Error"),
+            text=self.error_message,
+            show_back_button=False,
+            button_data=button_data,
+        )
+
+        if button_data[selected_menu_num] == self.RETRY:
+            return Destination(SeedReadNFCView)
+        else:
+            return Destination(SeedImportNFCView, clear_history=True)
+
+
+class SeedLoadFromNFCErrorView(View):
+    RETRY = ButtonOption("Retry")
+    CANCEL = ButtonOption("Cancel")
+
+    def __init__(self, error_message: str):
+        super().__init__()
+        self.error_message = error_message
+
+    def run(self):
+        button_data = [self.RETRY, self.CANCEL]
+        
+        selected_menu_num = self.run_screen(
+            DireWarningScreen,
+            title=_("Load Error"),
+            status_icon_name=SeedSignerIconConstants.ERROR,
+            status_headline=_("Error"),
+            text=self.error_message,
+            show_back_button=False,
+            button_data=button_data,
+        )
+
+        if button_data[selected_menu_num] == self.RETRY:
+            return Destination(BackStackView)
+        else:
+            return Destination(SeedImportNFCView, clear_history=True)
+
+
+class SeedDeleteFromNFCErrorView(View):
+    RETRY = ButtonOption("Retry")
+    CANCEL = ButtonOption("Cancel")
+
+    def __init__(self, error_message: str):
+        super().__init__()
+        self.error_message = error_message
+
+    def run(self):
+        button_data = [self.RETRY, self.CANCEL]
+        
+        selected_menu_num = self.run_screen(
+            DireWarningScreen,
+            title=_("Delete Error"),
+            status_icon_name=SeedSignerIconConstants.ERROR,
+            status_headline=_("Error"),
+            text=self.error_message,
+            show_back_button=False,
+            button_data=button_data,
+        )
+
+        if button_data[selected_menu_num] == self.RETRY:
+            return Destination(BackStackView)
+        else:
+            return Destination(SeedImportNFCView, clear_history=True)

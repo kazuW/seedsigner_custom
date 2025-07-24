@@ -1,0 +1,503 @@
+import logging
+import binascii
+import time
+from typing import Dict, List, Optional, Union, Tuple
+from seedsigner.models.seed import Seed
+from seedsigner.models.settings import SettingsConstants
+
+logger = logging.getLogger(__name__)
+
+class NFCReadException(Exception):
+    """NFC読み込みエラーの例外クラス"""
+    pass
+
+class NFCReader:
+    """PN532モジュールを使用してNFCカードからシードを読み込むクラス"""
+    
+    # NFCカードの定数 - NFCWriterと同じ定数を使用
+    SECTOR_SIZE = 4
+    BLOCK_SIZE = 16
+    MAX_SECTORS = 16
+    
+    # 管理ブロックの定数
+    VALID_SECTOR_MARKER = b'\xAA\x55\xFF\x00'
+    SEED_128BIT = 0x00
+    SEED_256BIT = 0xFF
+    
+    def __init__(self):
+        """初期化"""
+        self._nfc_module = None
+        self._current_card_uid = None
+        self._initialized = False
+    
+    def _initialize_nfc(self) -> bool:
+        """NFC初期化（読み込み前に毎回実行）"""
+        try:
+            logger.info("Initializing NFC module for reading...")
+            
+            # 現在のGPIOモードを確認
+            try:
+                import RPi.GPIO as GPIO
+                current_mode = GPIO.getmode()
+                logger.debug(f"Current GPIO mode: {current_mode}")
+            except Exception:
+                pass
+            
+            # NFCライブラリをインポート
+            import board
+            import busio
+            from adafruit_pn532.i2c import PN532_I2C
+            
+            # I2C初期化
+            i2c = busio.I2C(board.SCL, board.SDA)
+            time.sleep(0.1)
+            
+            # PN532初期化
+            self._nfc_module = PN532_I2C(i2c, debug=False, irq=None)
+            time.sleep(0.1)
+            
+            # SAM設定
+            self._nfc_module.SAM_configuration()
+            
+            self._initialized = True
+            logger.info("NFC initialization for reading successful")
+            return True
+            
+        except Exception as e:
+            logger.error(f"NFC initialization failed: {e}")
+            self._nfc_module = None
+            self._initialized = False
+            return False
+    
+    def read_seeds_from_nfc(self) -> Dict[str, Union[bool, str, List[Dict]]]:
+        """NFCカードから全ての有効なシードを読み込む"""
+        try:
+            # 読み込み前にNFC初期化
+            if not self._initialize_nfc():
+                return {
+                    'success': False,
+                    'error_message': 'NFC module initialization failed. Check hardware connection.'
+                }
+            
+            logger.info("Starting NFC read process...")
+            
+            # NFCカードの検出
+            card_uid = self._wait_for_card()
+            if not card_uid:
+                return {
+                    'success': False,
+                    'error_message': 'NFC card not detected. Please place card on reader.'
+                }
+            
+            # 全セクタをスキャンして有効なシードを検索
+            valid_seeds = self._scan_all_sectors()
+            
+            if not valid_seeds:
+                return {
+                    'success': True,
+                    'seeds': [],
+                    'message': 'No valid seeds found on NFC card.'
+                }
+            
+            logger.info(f"Found {len(valid_seeds)} valid seeds on NFC card")
+            return {
+                'success': True,
+                'seeds': valid_seeds
+            }
+                
+        except Exception as e:
+            logger.error(f"NFC read error: {e}")
+            return {
+                'success': False,
+                'error_message': str(e)
+            }
+    
+    def load_seed_from_nfc(self, sector_num: int, passphrase: str = "") -> Dict[str, Union[bool, str, Seed]]:
+        """指定されたセクタからシードをロードする"""
+        try:
+            # 読み込み前にNFC初期化
+            if not self._initialize_nfc():
+                return {
+                    'success': False,
+                    'error_message': 'NFC module initialization failed. Check hardware connection.'
+                }
+            
+            # NFCカードの検出
+            card_uid = self._wait_for_card()
+            if not card_uid:
+                return {
+                    'success': False,
+                    'error_message': 'NFC card not detected. Please place card on reader.'
+                }
+            
+            # 指定されたセクタからシードを読み込む
+            seed_data = self._read_seed_from_sector(sector_num)
+            if not seed_data:
+                return {
+                    'success': False,
+                    'error_message': f'Failed to read seed from sector {sector_num}.'
+                }
+            
+            # シードを復元
+            seed = self._reconstruct_seed(seed_data, passphrase)
+            if not seed:
+                return {
+                    'success': False,
+                    'error_message': 'Failed to reconstruct seed from NFC data.'
+                }
+            
+            # フィンガープリントを検証
+            if not self._verify_fingerprint(seed, seed_data['fingerprint']):
+                return {
+                    'success': False,
+                    'error_message': 'Fingerprint verification failed. Invalid passphrase or corrupted data.'
+                }
+            
+            return {
+                'success': True,
+                'seed': seed
+            }
+                
+        except Exception as e:
+            logger.error(f"NFC seed load error: {e}")
+            return {
+                'success': False,
+                'error_message': str(e)
+            }
+    
+    def delete_seed_from_nfc(self, sector_num: int) -> Dict[str, Union[bool, str]]:
+        """指定されたセクタからシードを削除する"""
+        try:
+            # 削除前にNFC初期化
+            if not self._initialize_nfc():
+                return {
+                    'success': False,
+                    'error_message': 'NFC module initialization failed. Check hardware connection.'
+                }
+            
+            # NFCカードの検出
+            card_uid = self._wait_for_card()
+            if not card_uid:
+                return {
+                    'success': False,
+                    'error_message': 'NFC card not detected. Please place card on reader.'
+                }
+            
+            # セクタのブロックを削除（0x00で埋める）
+            if self._clear_sector(sector_num):
+                return {
+                    'success': True,
+                    'message': f'Seed deleted from sector {sector_num}.'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error_message': f'Failed to delete seed from sector {sector_num}.'
+                }
+                
+        except Exception as e:
+            logger.error(f"NFC seed delete error: {e}")
+            return {
+                'success': False,
+                'error_message': str(e)
+            }
+    
+    def _authenticate_block(self, block_num: int, uid: bytes = None) -> bool:
+        """ブロックの認証を行う"""
+        try:
+            default_key = b'\xFF\xFF\xFF\xFF\xFF\xFF'
+            
+            if uid is None:
+                uid = self._current_card_uid
+            
+            return self._nfc_module.mifare_classic_authenticate_block(
+                uid, block_num, 0x60, default_key
+            )
+        except Exception as e:
+            logger.debug(f"Authentication failed for block {block_num}: {e}")
+            return False
+    
+    def _wait_for_card(self, timeout: int = 30) -> Optional[bytes]:
+        """NFCカード検出待機"""
+        logger.info("Waiting for NFC card...")
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                uid = self._nfc_module.read_passive_target(timeout=0.5)
+                if uid is not None:
+                    logger.info(f"NFC card detected: {[hex(i) for i in uid]}")
+                    self._current_card_uid = uid
+                    return uid
+            except Exception:
+                continue
+            time.sleep(0.1)
+        
+        return None
+    
+    def _scan_all_sectors(self) -> List[Dict]:
+        """全セクタをスキャンして有効なシードを検索"""
+        valid_seeds = []
+        
+        for sector_num in range(1, self.MAX_SECTORS):  # セクタ0は除外
+            try:
+                management_block_num = sector_num * self.SECTOR_SIZE + 1
+                
+                if not self._authenticate_block(management_block_num):
+                    continue
+                
+                management_block = self._nfc_module.mifare_classic_read_block(management_block_num)
+                if management_block is None:
+                    continue
+                
+                # 有効セクタかどうか確認
+                if management_block[:4] == self.VALID_SECTOR_MARKER:
+                    seed_type = management_block[4]
+                    checksum = management_block[7]
+                    fingerprint = management_block[8:16]
+                    
+                    # フィンガープリントを16進文字列に変換
+                    fingerprint_hex = binascii.hexlify(fingerprint).decode('utf-8')
+                    
+                    valid_seeds.append({
+                        'sector': sector_num,
+                        'fingerprint': fingerprint_hex,
+                        'seed_type': '128bit' if seed_type == self.SEED_128BIT else '256bit',
+                        'checksum': checksum
+                    })
+                    
+                    logger.info(f"Valid seed found in sector {sector_num}: {fingerprint_hex}")
+                
+                time.sleep(0.1)
+                
+            except Exception as e:
+                logger.debug(f"Error reading sector {sector_num}: {e}")
+                continue
+        
+        return valid_seeds
+    
+    def _read_seed_from_sector(self, sector_num: int) -> Optional[Dict]:
+        """指定されたセクタからシードデータを読み込む"""
+        try:
+            # 管理ブロック読み込み
+            management_block_num = sector_num * self.SECTOR_SIZE + 1
+            
+            if not self._authenticate_block(management_block_num):
+                logger.error(f"Authentication failed for management block")
+                return None
+            
+            management_block = self._nfc_module.mifare_classic_read_block(management_block_num)
+            if management_block is None or management_block[:4] != self.VALID_SECTOR_MARKER:
+                logger.error(f"Invalid sector {sector_num}")
+                return None
+            
+            seed_type = management_block[4]
+            checksum = management_block[7]
+            fingerprint = management_block[8:16]
+            
+            # シードブロック1読み込み
+            block2_num = sector_num * self.SECTOR_SIZE + 2
+            if not self._authenticate_block(block2_num):
+                logger.error(f"Authentication failed for seed block 1")
+                return None
+            
+            seed_block1 = self._nfc_module.mifare_classic_read_block(block2_num)
+            if seed_block1 is None:
+                logger.error(f"Failed to read seed block 1")
+                return None
+            
+            compressed_seed = bytearray(seed_block1)
+            
+            # 256bitの場合はシードブロック2も読み込み
+            if seed_type == self.SEED_256BIT:
+                block3_num = sector_num * self.SECTOR_SIZE + 3
+                
+                if not self._authenticate_block(block3_num):
+                    logger.error(f"Authentication failed for seed block 2")
+                    return None
+                
+                seed_block2 = self._nfc_module.mifare_classic_read_block(block3_num)
+                if seed_block2 is None:
+                    logger.error(f"Failed to read seed block 2")
+                    return None
+                
+                compressed_seed.extend(seed_block2)
+            
+            return {
+                'seed_type': seed_type,
+                'checksum': checksum,
+                'fingerprint': fingerprint,
+                'compressed_seed': bytes(compressed_seed)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error reading seed from sector {sector_num}: {e}")
+            return None
+    
+    def _reconstruct_seed(self, seed_data: Dict, passphrase: str = "") -> Optional[Seed]:
+        """圧縮されたシードデータからSeedオブジェクトを復元"""
+        try:
+            seed_type = seed_data['seed_type']
+            checksum = seed_data['checksum']
+            compressed_seed = seed_data['compressed_seed']
+            
+            # 128bitか256bitかを判定
+            if seed_type == self.SEED_128BIT:
+                num_words = 12
+                words_to_decode = 11
+            elif seed_type == self.SEED_256BIT:
+                num_words = 24
+                words_to_decode = 23
+            else:
+                logger.error(f"Invalid seed type: {seed_type}")
+                return None
+            
+            # 圧縮されたシードをビット文字列に変換
+            bit_string = ""
+            for byte in compressed_seed:
+                bit_string += format(byte, '08b')
+            
+            # 11ビットずつ区切って単語インデックスを復元
+            word_indices = []
+            for i in range(words_to_decode):
+                start_bit = i * 11
+                end_bit = start_bit + 11
+                if end_bit <= len(bit_string):
+                    word_index = int(bit_string[start_bit:end_bit], 2)
+                    word_indices.append(word_index)
+            
+            # BIP39ワードリストから単語を取得
+            wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
+            mnemonic = []
+            
+            for index in word_indices:
+                if index >= len(wordlist):
+                    logger.error(f"Invalid word index: {index}")
+                    return None
+                mnemonic.append(wordlist[index])
+            
+            # チェックサム単語を追加
+            if checksum >= len(wordlist):
+                logger.error(f"Invalid checksum index: {checksum}")
+                return None
+            mnemonic.append(wordlist[checksum])
+            
+            # チェックサムを検証
+            calculated_checksum_index = self._calculate_checksum_index(mnemonic[:-1], num_words)
+            if calculated_checksum_index != checksum:
+                logger.error(f"Checksum verification failed: expected {checksum}, got {calculated_checksum_index}")
+                return None
+            
+            # Seedオブジェクトを作成
+            seed = Seed(mnemonic, passphrase)
+            
+            logger.info(f"Successfully reconstructed {num_words}-word seed")
+            return seed
+            
+        except Exception as e:
+            logger.error(f"Error reconstructing seed: {e}")
+            return None
+    
+    def _calculate_checksum_index(self, partial_mnemonic: List[str], total_words: int) -> int:
+        """部分的なニーモニックからチェックサムインデックスを計算"""
+        try:
+            # BIP39の仕様に従ってエントロピーを計算
+            wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
+            
+            # 単語をインデックスに変換
+            indices = []
+            for word in partial_mnemonic:
+                try:
+                    index = wordlist.index(word)
+                    indices.append(index)
+                except ValueError:
+                    logger.error(f"Word '{word}' not found in wordlist")
+                    return -1
+            
+            # インデックスをビット文字列に変換
+            bit_string = ""
+            for index in indices:
+                bit_string += format(index, '011b')
+            
+            # エントロピー長を計算
+            entropy_bits = (total_words * 11) - (total_words // 3)
+            entropy_string = bit_string[:entropy_bits]
+            
+            # エントロピーをバイト配列に変換（8ビットずつ）
+            entropy_bytes = bytearray()
+            for i in range(0, len(entropy_string), 8):
+                byte_str = entropy_string[i:i+8]
+                if len(byte_str) < 8:
+                    byte_str = byte_str.ljust(8, '0')  # 最後のバイトが8ビット未満の場合はパディング
+                entropy_bytes.append(int(byte_str, 2))
+            
+            # エントロピーからSHA256を計算
+            import hashlib
+            hash_bytes = hashlib.sha256(bytes(entropy_bytes)).digest()
+            
+            # チェックサムビットを抽出
+            checksum_bits = total_words // 3
+            hash_bit_string = ''.join(format(b, '08b') for b in hash_bytes)
+            checksum_string = hash_bit_string[:checksum_bits]
+            
+            # 最後の単語のインデックスを計算
+            # 残りのエントロピービット + チェックサムビット = 11ビット
+            remaining_entropy_bits = 11 - checksum_bits
+            remaining_entropy = bit_string[entropy_bits:entropy_bits + remaining_entropy_bits]
+            
+            last_word_bits = remaining_entropy + checksum_string
+            checksum_index = int(last_word_bits, 2)
+            
+            return checksum_index
+            
+        except Exception as e:
+            logger.error(f"Error calculating checksum: {e}")
+            return -1
+    
+    def _verify_fingerprint(self, seed: Seed, expected_fingerprint: bytes) -> bool:
+        """シードのフィンガープリントを検証"""
+        try:
+            actual_fingerprint = seed.get_fingerprint()
+            expected_fingerprint_hex = binascii.hexlify(expected_fingerprint).decode('utf-8')
+            
+            logger.debug(f"Expected fingerprint: {expected_fingerprint_hex}")
+            logger.debug(f"Actual fingerprint: {actual_fingerprint}")
+            
+            return actual_fingerprint == expected_fingerprint_hex
+            
+        except Exception as e:
+            logger.error(f"Error verifying fingerprint: {e}")
+            return False
+    
+    def _clear_sector(self, sector_num: int) -> bool:
+        """指定されたセクタのブロックを削除（0x00で埋める）"""
+        try:
+            # セクタの1、2、3番目のブロックを0x00で埋める（管理ブロック→シードブロックの順）
+            zero_block = bytes(16)  # 16バイトの0x00
+            
+            blocks_to_clear = [
+                sector_num * self.SECTOR_SIZE + 1,  # 管理ブロック
+                sector_num * self.SECTOR_SIZE + 2,  # シードブロック1
+                sector_num * self.SECTOR_SIZE + 3   # シードブロック2
+            ]
+            
+            for block_num in blocks_to_clear:
+                # トレーラーブロックかどうかチェック
+                if (block_num % 4) == 3 and block_num != blocks_to_clear[2]:
+                    logger.warning(f"Skipping trailer block {block_num}")
+                    continue
+                
+                if not self._authenticate_block(block_num):
+                    logger.error(f"Authentication failed for block {block_num}")
+                    return False
+                
+                self._nfc_module.mifare_classic_write_block(block_num, zero_block)
+                logger.info(f"Cleared block {block_num}")
+                time.sleep(0.1)
+            
+            logger.info(f"Successfully cleared sector {sector_num}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to clear sector {sector_num}: {e}")
+            return False
