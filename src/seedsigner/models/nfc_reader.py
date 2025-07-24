@@ -520,7 +520,9 @@ class NFCReader:
             
             logger.info(f"NFCReader: ✓ BIP39 checksum verification SUCCESSFUL:")
             logger.info(f"NFCReader:   Calculated: {calculated_checksum_index} == Stored: {checksum}")
-            logger.info(f"NFCReader: ✓ NFC Reader uses same checksum calculation as QR code processing")
+            logger.info(f"NFCReader: ✓ NFC Reader uses same checksum calculation as CompactSeedQR processing")
+            logger.info(f"NFCReader: === Final Verification ===")
+            logger.info(f"NFCReader: If this matches CompactSeedQR logs, both methods are identical")
             
             # Seedオブジェクトを作成
             seed = Seed(mnemonic, passphrase)
@@ -575,9 +577,17 @@ class NFCReader:
                 logger.info(f"NFCReader: Generated checksum word: '{generated_checksum_word}' -> index {generated_checksum_index}")
                 logger.info(f"NFCReader: Stored checksum index: {checksum} -> word '{wordlist[checksum]}'")
                 
+                # CompactSeedQRとの比較情報をログ出力
+                logger.info(f"NFCReader: === CompactSeedQR Comparison ===")
+                logger.info(f"NFCReader: This entropy should match CompactSeedQR entropy: {binascii.hexlify(compressed_seed).decode('utf-8')}")
+                logger.info(f"NFCReader: This mnemonic should match CompactSeedQR: {' '.join(mnemonic)}")
+                logger.info(f"NFCReader: This checksum should match CompactSeedQR: '{generated_checksum_word}' (index {generated_checksum_index})")
+                
                 # チェックサム検証の詳細ログ
                 if generated_checksum_index == checksum:
                     logger.info(f"NFCReader: ✓ Checksum verification successful: {generated_checksum_index} == {checksum}")
+                    logger.info(f"NFCReader: ✓ Both NFC and CompactSeedQR use identical embit.bip39 methods")
+                    logger.info(f"NFCReader: ✓ Expected: CompactSeedQR and NFC should produce identical results")
                     logger.info(f"NFCReader: ✓ Both NFC and QR code methods produce identical results")
                     return mnemonic
                 else:
@@ -627,7 +637,10 @@ class NFCReader:
                 checksum_index = wordlist.index(last_word)
                 
                 logger.info(f"NFCReader: Last word (checksum): '{last_word}' -> index {checksum_index}")
-                logger.info(f"NFCReader: ✓ Checksum calculation completed using embit.bip39 (same as QR code)")
+                logger.info(f"NFCReader: ✓ Checksum calculation completed using embit.bip39 (same as CompactSeedQR)")
+                logger.info(f"NFCReader: === Method Verification ===")
+                logger.info(f"NFCReader: Used same embit.bip39.mnemonic_to_bytes() -> embit.bip39.mnemonic_from_bytes() as CompactSeedQR")
+                logger.info(f"NFCReader: This checksum index should match CompactSeedQR checksum index")
                 return checksum_index
                 
             except Exception as e:
