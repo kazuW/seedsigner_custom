@@ -213,18 +213,33 @@ class NFCWriter:
         
         # チェックサム取得
         checksum_index = wordlist.index(mnemonic[-1])
-        if checksum_index > 255:
-            checksum_index = 255
+        logger.info(f"Original checksum index: {checksum_index} (word: '{mnemonic[-1]}')")
+        
+        # チェックサムを16ビット（0-65535）として保存
+        # BIP39ワードリストは2048語なので16ビットで十分
+        if checksum_index > 65535:
+            logger.error(f"Checksum index {checksum_index} exceeds 16-bit range (0-65535)")
+            raise NFCWriteException(f"Checksum index too large: {checksum_index}")
+        
+        # 16ビット値として上位バイトと下位バイトに分割
+        checksum_high = (checksum_index >> 8) & 0xFF  # 上位8ビット
+        checksum_low = checksum_index & 0xFF          # 下位8ビット
+        
+        logger.info(f"Checksum stored as 16-bit: high={checksum_high}, low={checksum_low}")
+        logger.debug(f"Checksum verification: {(checksum_high << 8) | checksum_low} == {checksum_index}")
         
         # フィンガープリント取得
         fingerprint_bytes = binascii.unhexlify(seed.get_fingerprint())
         
         logger.info(f"Seed type: {'128bit' if seed_type == self.SEED_128BIT else '256bit'}")
         logger.info(f"Compressed seed length: {len(compressed_seed)} bytes")
+        logger.info(f"Fingerprint: {seed.get_fingerprint()}")
         
         return {
             'seed_type': seed_type,
-            'checksum': checksum_index,
+            'checksum': checksum_index,           # 元の16ビット値
+            'checksum_high': checksum_high,       # 上位8ビット（バイト5）
+            'checksum_low': checksum_low,         # 下位8ビット（バイト6）
             'fingerprint': fingerprint_bytes,
             'compressed_seed': bytes(compressed_seed)
         }
@@ -288,15 +303,28 @@ class NFCWriter:
             
             # 管理データ設定
             management_block[0:4] = self.VALID_SECTOR_MARKER  # [0:3] 有効セクタマーカー
-            management_block[4] = seed_data['seed_type']      # [4] シードタイプ
-            management_block[7] = seed_data['checksum']       # [7] チェックサム
+            management_block[4] = seed_data['seed_type']       # [4] シードタイプ
+            management_block[5] = seed_data['checksum_high']   # [5] チェックサム上位8ビット
+            management_block[6] = seed_data['checksum_low']    # [6] チェックサム下位8ビット
+            # [7] 予約済み（将来の拡張用）
+            
+            logger.debug(f"Management block data preparation:")
+            logger.debug(f"  Marker [0:4]: {self.VALID_SECTOR_MARKER.hex()}")
+            logger.debug(f"  Seed type [4]: {seed_data['seed_type']} ({'128bit' if seed_data['seed_type'] == self.SEED_128BIT else '256bit'})")
+            logger.debug(f"  Checksum high [5]: {seed_data['checksum_high']}")
+            logger.debug(f"  Checksum low [6]: {seed_data['checksum_low']}")
+            logger.debug(f"  Full checksum: {seed_data['checksum']} = {seed_data['checksum_high']} << 8 | {seed_data['checksum_low']}")
             
             # [8:15] フィンガープリント
             fingerprint_bytes = seed_data['fingerprint']
             if len(fingerprint_bytes) >= 8:
                 management_block[8:16] = fingerprint_bytes[:8]
+                logger.debug(f"  Fingerprint [8:16]: {fingerprint_bytes[:8].hex()}")
             else:
                 management_block[8:8+len(fingerprint_bytes)] = fingerprint_bytes
+                logger.debug(f"  Fingerprint [8:{8+len(fingerprint_bytes)}]: {fingerprint_bytes.hex()}")
+            
+            logger.debug(f"Complete management block: {management_block.hex()}")
             
             if not self._authenticate_block(management_block_num):
                 logger.error(f"Authentication failed for management block")
@@ -307,6 +335,26 @@ class NFCWriter:
 
             self._nfc_module.mifare_classic_write_block(management_block_num, bytes(management_block))
             logger.info(f"Management block written to block {management_block_num}")
+            
+            # 書き込み後に読み返して確認
+            time.sleep(0.1)
+            if self._authenticate_block(management_block_num):
+                written_block = self._nfc_module.mifare_classic_read_block(management_block_num)
+                if written_block:
+                    logger.debug(f"Verification - read back management block: {written_block.hex()}")
+                    written_checksum_high = written_block[5]
+                    written_checksum_low = written_block[6]
+                    written_checksum = (written_checksum_high << 8) | written_checksum_low
+                    logger.info(f"Verification - checksum written and read back: {written_checksum} (high={written_checksum_high}, low={written_checksum_low})")
+                    if written_checksum != seed_data['checksum']:
+                        logger.error(f"Checksum verification failed! Expected: {seed_data['checksum']}, Got: {written_checksum}")
+                        return False
+                    else:
+                        logger.info("✓ Checksum verification successful")
+                else:
+                    logger.warning("Could not read back management block for verification")
+            else:
+                logger.warning("Could not authenticate for verification read")
             
             time.sleep(0.1)
 

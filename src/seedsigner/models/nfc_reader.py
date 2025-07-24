@@ -264,11 +264,14 @@ class NFCReader:
                     logger.info(f"Valid seed marker found in sector {sector_num}")
                     
                     seed_type = management_block[4]
-                    checksum = management_block[7]
+                    # 16-bitチェックサムを読み込み（bytes [5:6]から）
+                    checksum_high = management_block[5]
+                    checksum_low = management_block[6]
+                    checksum = (checksum_high << 8) | checksum_low
                     fingerprint = management_block[8:16]
                     
                     logger.debug(f"Seed type: {seed_type} ({'128bit' if seed_type == self.SEED_128BIT else '256bit'})")
-                    logger.debug(f"Checksum index: {checksum}")
+                    logger.debug(f"16-bit checksum: {checksum} (0x{checksum:04X}) from bytes [{checksum_high}, {checksum_low}]")
                     logger.debug(f"Fingerprint bytes: {binascii.hexlify(fingerprint).decode('utf-8')}")
                     
                     # シードブロック1を読み込み
@@ -367,7 +370,10 @@ class NFCReader:
                 return None
             
             seed_type = management_block[4]
-            checksum = management_block[7]
+            # 16-bitチェックサムを読み込み（bytes [5:6]から）
+            checksum_high = management_block[5]
+            checksum_low = management_block[6]
+            checksum = (checksum_high << 8) | checksum_low
             fingerprint = management_block[8:16]
             
             # シードブロック1読み込み
@@ -453,7 +459,7 @@ class NFCReader:
             
             # チェックサム単語を追加
             if checksum >= len(wordlist):
-                logger.error(f"Invalid checksum index: {checksum}")
+                logger.error(f"Invalid checksum index: {checksum} (must be 0-{len(wordlist)-1} for BIP39)")
                 return None
             mnemonic.append(wordlist[checksum])
             
@@ -513,7 +519,7 @@ class NFCReader:
             
             # チェックサム単語を追加
             if checksum >= len(wordlist):
-                logger.error(f"Invalid checksum index: {checksum}")
+                logger.error(f"Invalid checksum index: {checksum} (must be 0-{len(wordlist)-1} for BIP39)")
                 return None
             mnemonic.append(wordlist[checksum])
             
