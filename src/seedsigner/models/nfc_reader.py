@@ -463,11 +463,15 @@ class NFCReader:
                 return None
             mnemonic.append(wordlist[checksum])
             
-            # チェックサムを検証
+            # BIP39標準のチェックサム検証を実行
+            # 11個の単語からBIP39仕様に従ってチェックサムを計算し、12番目の単語と一致するか確認
             calculated_checksum_index = self._calculate_checksum_index(mnemonic[:-1], num_words)
             if calculated_checksum_index != checksum:
-                logger.error(f"Checksum verification failed: expected {checksum}, got {calculated_checksum_index}")
+                logger.error(f"BIP39 checksum verification failed: calculated {calculated_checksum_index}, stored {checksum}")
+                logger.error(f"This means the stored seed is not a valid BIP39 mnemonic")
                 return None
+            
+            logger.debug(f"BIP39 checksum verification successful: calculated {calculated_checksum_index} == stored {checksum}")
             
             # Seedオブジェクトを作成
             seed = Seed(mnemonic, passphrase)
@@ -523,11 +527,15 @@ class NFCReader:
                 return None
             mnemonic.append(wordlist[checksum])
             
-            # チェックサムを検証
+            # BIP39標準のチェックサム検証を実行
+            # 11個の単語からBIP39仕様に従ってチェックサムを計算し、12番目の単語と一致するか確認
             calculated_checksum_index = self._calculate_checksum_index(mnemonic[:-1], num_words)
             if calculated_checksum_index != checksum:
-                logger.error(f"Checksum verification failed: expected {checksum}, got {calculated_checksum_index}")
+                logger.error(f"BIP39 checksum verification failed: calculated {calculated_checksum_index}, stored {checksum}")
+                logger.error(f"This means the stored seed is not a valid BIP39 mnemonic")
                 return None
+            
+            logger.debug(f"BIP39 checksum verification successful: calculated {calculated_checksum_index} == stored {checksum}")
             
             logger.debug(f"Successfully decompressed {num_words}-word mnemonic")
             return mnemonic
@@ -539,6 +547,9 @@ class NFCReader:
     def _calculate_checksum_index(self, partial_mnemonic: List[str], total_words: int) -> int:
         """部分的なニーモニックからチェックサムインデックスを計算"""
         try:
+            logger.debug(f"Calculating BIP39 checksum for {len(partial_mnemonic)} words (expecting {total_words} total)")
+            logger.debug(f"Input words: {partial_mnemonic}")
+            
             # BIP39の仕様に従ってエントロピーを計算
             wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
             
@@ -548,6 +559,7 @@ class NFCReader:
                 try:
                     index = wordlist.index(word)
                     indices.append(index)
+                    logger.debug(f"Word '{word}' -> index {index}")
                 except ValueError:
                     logger.error(f"Word '{word}' not found in wordlist")
                     return -1
@@ -557,9 +569,12 @@ class NFCReader:
             for index in indices:
                 bit_string += format(index, '011b')
             
+            logger.debug(f"Combined bit string: {bit_string} (length: {len(bit_string)} bits)")
+            
             # エントロピー長を計算
             entropy_bits = (total_words * 11) - (total_words // 3)
             entropy_string = bit_string[:entropy_bits]
+            logger.debug(f"Entropy bits: {entropy_bits}, entropy string: {entropy_string}")
             
             # エントロピーをバイト配列に変換（8ビットずつ）
             entropy_bytes = bytearray()
@@ -569,22 +584,29 @@ class NFCReader:
                     byte_str = byte_str.ljust(8, '0')  # 最後のバイトが8ビット未満の場合はパディング
                 entropy_bytes.append(int(byte_str, 2))
             
+            logger.debug(f"Entropy bytes: {[hex(b) for b in entropy_bytes]}")
+            
             # エントロピーからSHA256を計算
             import hashlib
             hash_bytes = hashlib.sha256(bytes(entropy_bytes)).digest()
+            logger.debug(f"SHA256 hash: {hash_bytes.hex()}")
             
             # チェックサムビットを抽出
             checksum_bits = total_words // 3
             hash_bit_string = ''.join(format(b, '08b') for b in hash_bytes)
             checksum_string = hash_bit_string[:checksum_bits]
+            logger.debug(f"Checksum bits needed: {checksum_bits}, checksum string: {checksum_string}")
             
             # 最後の単語のインデックスを計算
             # 残りのエントロピービット + チェックサムビット = 11ビット
             remaining_entropy_bits = 11 - checksum_bits
             remaining_entropy = bit_string[entropy_bits:entropy_bits + remaining_entropy_bits]
+            logger.debug(f"Remaining entropy bits: {remaining_entropy_bits}, remaining entropy: {remaining_entropy}")
             
             last_word_bits = remaining_entropy + checksum_string
             checksum_index = int(last_word_bits, 2)
+            
+            logger.debug(f"Last word bits: {last_word_bits} -> checksum index: {checksum_index}")
             
             return checksum_index
             
