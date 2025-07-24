@@ -861,11 +861,55 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
 
         if qr_type == QRType.SEED__COMPACTSEEDQR:
             try:
-                self.seed_phrase = bip39.mnemonic_from_bytes(segment).split()
+                logger.info(f"CompactSeedQR: Processing QR code with {len(segment)} bytes of entropy")
+                logger.debug(f"CompactSeedQR: Entropy hex: {segment.hex()}")
+                
+                # embit.bip39を使用してエントロピーからニーモニックを生成
+                mnemonic_string = bip39.mnemonic_from_bytes(segment)
+                self.seed_phrase = mnemonic_string.split()
+                
+                logger.info(f"CompactSeedQR: Generated {len(self.seed_phrase)}-word mnemonic using embit.bip39.mnemonic_from_bytes")
+                logger.debug(f"CompactSeedQR: Full mnemonic: {' '.join(self.seed_phrase)}")
+                logger.debug(f"CompactSeedQR: First word: '{self.seed_phrase[0]}', Last word: '{self.seed_phrase[-1]}'")
+                
+                # 最後の単語（チェックサム単語）の詳細情報をログ出力
+                if len(self.seed_phrase) >= 12:
+                    wordlist = Seed.get_wordlist(self.wordlist_language_code)
+                    last_word = self.seed_phrase[-1]
+                    last_word_index = wordlist.index(last_word)
+                    logger.info(f"CompactSeedQR: Checksum word (last): '{last_word}' -> index {last_word_index}")
+                    
+                    # 11語または23語の部分的なニーモニックからチェックサム計算をログ出力
+                    partial_words = self.seed_phrase[:-1]
+                    logger.debug(f"CompactSeedQR: Partial mnemonic ({len(partial_words)} words): {' '.join(partial_words)}")
+                    
+                    # 部分的なニーモニックからエントロピーを取得してチェックサム検証
+                    try:
+                        partial_entropy = bip39.mnemonic_to_bytes(' '.join(partial_words), ignore_checksum=True)
+                        logger.debug(f"CompactSeedQR: Partial entropy hex: {partial_entropy.hex()}")
+                        
+                        # エントロピーから完全なニーモニックを再生成
+                        regenerated_mnemonic = bip39.mnemonic_from_bytes(partial_entropy)
+                        regenerated_words = regenerated_mnemonic.split()
+                        regenerated_last_word = regenerated_words[-1]
+                        regenerated_last_index = wordlist.index(regenerated_last_word)
+                        
+                        logger.debug(f"CompactSeedQR: Regenerated mnemonic: {regenerated_mnemonic}")
+                        logger.info(f"CompactSeedQR: Regenerated checksum word: '{regenerated_last_word}' -> index {regenerated_last_index}")
+                        
+                        if last_word_index == regenerated_last_index:
+                            logger.info(f"CompactSeedQR: ✓ Checksum verification successful: {last_word_index} == {regenerated_last_index}")
+                        else:
+                            logger.warning(f"CompactSeedQR: ✗ Checksum verification failed: {last_word_index} != {regenerated_last_index}")
+                            
+                    except Exception as checksum_e:
+                        logger.warning(f"CompactSeedQR: Checksum verification error: {checksum_e}")
+                
                 self.complete = True
                 self.collected_segments = 1
                 return DecodeQRStatus.COMPLETE
             except Exception as e:
+                logger.error(f"CompactSeedQR: Error processing QR code: {e}")
                 logger.exception(repr(e))
                 return DecodeQRStatus.INVALID
 
