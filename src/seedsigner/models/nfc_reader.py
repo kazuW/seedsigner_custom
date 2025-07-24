@@ -246,7 +246,7 @@ class NFCReader:
                 scanned_sectors += 1
                 logger.debug(f"Scanning sector {sector_num} ({scanned_sectors}/{self.MAX_SECTORS-1})")
                 
-                management_block_num = sector_num * self.SECTOR_SIZE + 1
+                management_block_num = sector_num * self.SECTOR_SIZE  # セクタの最初のブロック（4,8,12,...）
                 
                 if not self._authenticate_block(management_block_num):
                     logger.debug(f"Authentication failed for management block {management_block_num} in sector {sector_num}")
@@ -274,8 +274,8 @@ class NFCReader:
                     logger.debug(f"16-bit checksum: {checksum} (0x{checksum:04X}) from bytes [{checksum_high}, {checksum_low}]")
                     logger.debug(f"Fingerprint bytes: {binascii.hexlify(fingerprint).decode('utf-8')}")
                     
-                    # シードブロック1を読み込み
-                    block2_num = sector_num * self.SECTOR_SIZE + 2
+                    # シードブロック1を読み込み（sector*4+1）
+                    block2_num = sector_num * self.SECTOR_SIZE + 1
                     logger.debug(f"Reading seed block 1 (block {block2_num})")
                     
                     if not self._authenticate_block(block2_num):
@@ -290,9 +290,9 @@ class NFCReader:
                     logger.debug(f"Seed block 1 data: {binascii.hexlify(seed_block1).decode('utf-8')}")
                     compressed_seed = bytearray(seed_block1)
                     
-                    # 256bitの場合はシードブロック2も読み込み
+                    # 256bitの場合はシードブロック2も読み込み（sector*4+2）
                     if seed_type == self.SEED_256BIT:
-                        block3_num = sector_num * self.SECTOR_SIZE + 3
+                        block3_num = sector_num * self.SECTOR_SIZE + 2
                         logger.debug(f"Reading seed block 2 (block {block3_num}) for 256bit seed")
                         
                         if not self._authenticate_block(block3_num):
@@ -357,8 +357,8 @@ class NFCReader:
     def _read_seed_from_sector(self, sector_num: int) -> Optional[Dict]:
         """指定されたセクタからシードデータを読み込む"""
         try:
-            # 管理ブロック読み込み
-            management_block_num = sector_num * self.SECTOR_SIZE + 1
+            # 管理ブロック読み込み（セクタの最初のブロック: sector*4）
+            management_block_num = sector_num * self.SECTOR_SIZE  # セクタの最初のブロック（4,8,12,...）
             
             if not self._authenticate_block(management_block_num):
                 logger.error(f"Authentication failed for management block")
@@ -376,8 +376,8 @@ class NFCReader:
             checksum = (checksum_high << 8) | checksum_low
             fingerprint = management_block[8:16]
             
-            # シードブロック1読み込み
-            block2_num = sector_num * self.SECTOR_SIZE + 2
+            # シードブロック1読み込み（sector*4+1）
+            block2_num = sector_num * self.SECTOR_SIZE + 1
             if not self._authenticate_block(block2_num):
                 logger.error(f"Authentication failed for seed block 1")
                 return None
@@ -389,9 +389,9 @@ class NFCReader:
             
             compressed_seed = bytearray(seed_block1)
             
-            # 256bitの場合はシードブロック2も読み込み
+            # 256bitの場合はシードブロック2も読み込み（sector*4+2）
             if seed_type == self.SEED_256BIT:
-                block3_num = sector_num * self.SECTOR_SIZE + 3
+                block3_num = sector_num * self.SECTOR_SIZE + 2
                 
                 if not self._authenticate_block(block3_num):
                     logger.error(f"Authentication failed for seed block 2")
@@ -614,14 +614,14 @@ class NFCReader:
             zero_block = bytes(16)  # 16バイトの0x00
             
             blocks_to_clear = [
-                sector_num * self.SECTOR_SIZE + 1,  # 管理ブロック
-                sector_num * self.SECTOR_SIZE + 2,  # シードブロック1
-                sector_num * self.SECTOR_SIZE + 3   # シードブロック2
+                sector_num * self.SECTOR_SIZE,      # 管理ブロック（sector*4）
+                sector_num * self.SECTOR_SIZE + 1,  # シードブロック1（sector*4+1）
+                sector_num * self.SECTOR_SIZE + 2   # シードブロック2（sector*4+2）
             ]
             
             for block_num in blocks_to_clear:
-                # トレーラーブロックかどうかチェック
-                if (block_num % 4) == 3 and block_num != blocks_to_clear[2]:
+                # トレーラーブロック（sector*4+3）は触らない
+                if (block_num % 4) == 3:
                     logger.warning(f"Skipping trailer block {block_num}")
                     continue
                 

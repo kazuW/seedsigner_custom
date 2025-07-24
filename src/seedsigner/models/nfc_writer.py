@@ -158,7 +158,7 @@ class NFCWriter:
         
         for sector_num in range(1, self.MAX_SECTORS):  # セクタ0は除外
             try:
-                management_block_num = sector_num * self.SECTOR_SIZE + 1
+                management_block_num = sector_num * self.SECTOR_SIZE  # セクタの最初のブロック（4,8,12,...）
                 
                 if not self._authenticate_block(management_block_num):
                     continue
@@ -250,8 +250,8 @@ class NFCWriter:
             compressed_seed = seed_data['compressed_seed']
             seed_type = seed_data['seed_type']
             
-            # 1. シードブロック書き込み（2番目のブロック）
-            block2_num = sector_num * self.SECTOR_SIZE + 2
+            # 1. シードブロック書き込み（2番目のブロック: sector*4+1）
+            block2_num = sector_num * self.SECTOR_SIZE + 1
             seed_block1 = bytearray(16)
             
             if compressed_seed:
@@ -270,13 +270,9 @@ class NFCWriter:
             
             time.sleep(0.1)
 
-            # 2. 256bitの場合は3番目のブロックも書き込み
+            # 2. 256bitの場合は3番目のブロック（sector*4+2）も書き込み
             if seed_type == self.SEED_256BIT and len(compressed_seed) > 16:
-                block3_num = sector_num * self.SECTOR_SIZE + 3
-                
-                if (block3_num % 4) == 3:  # トレーラーブロック衝突チェック
-                    logger.error(f"Block {block3_num} conflicts with sector trailer")
-                    return False
+                block3_num = sector_num * self.SECTOR_SIZE + 2
                 
                 seed_block2 = bytearray(16)
                 remaining_data = compressed_seed[16:]
@@ -297,8 +293,8 @@ class NFCWriter:
             
             time.sleep(0.1)
 
-            # 3. 管理ブロック書き込み（1番目のブロック）
-            management_block_num = sector_num * self.SECTOR_SIZE + 1
+            # 3. 管理ブロック書き込み（1番目のブロック: sector*4）
+            management_block_num = sector_num * self.SECTOR_SIZE  # セクタの最初のブロック（4,8,12,...）
             management_block = bytearray(16)
             
             # 管理データ設定
