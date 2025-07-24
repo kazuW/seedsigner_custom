@@ -571,72 +571,49 @@ class NFCReader:
             
             logger.debug(f"Combined bit string: {bit_string} (length: {len(bit_string)} bits)")
             
-            # 12語のBIP39では：
-            # - 全体は132ビット (12 × 11)
-            # - エントロピーは128ビット
-            # - チェックサムは4ビット
-            # - 最後の単語は：残りエントロピー7ビット + チェックサム4ビット = 11ビット
+            # BIP39チェックサム計算の正しい方法：
+            # 1. 11語のビット文字列（121ビット）を16バイトにパディング
+            # 2. そのバイトデータのSHA256を計算
+            # 3. ハッシュの最初の4ビットがチェックサム
+            # 4. 最後の単語は：元の最後のビット（足りない分は0パディング）+ チェックサム4ビット
             
-            if total_words == 12:
-                entropy_bits = 128  # 12語BIP39のエントロピー
-                # 11語で表現されるのは128ビットのうち最初の121ビット
-                # 残り7ビットは最後の単語に含まれる
-                entropy_string = bit_string  # 11語すべて (121ビット)
-                effective_entropy_bits = len(bit_string)  # 実際のエントロピービット数 (121)
-            elif total_words == 24:
-                entropy_bits = 256  # 24語BIP39のエントロピー
-                # 23語で表現されるのは256ビットのうち最初の253ビット
-                # 残り3ビットは最後の単語に含まれる
-                entropy_string = bit_string  # 23語すべて (253ビット)
-                effective_entropy_bits = len(bit_string)  # 実際のエントロピービット数 (253)
-            else:
-                logger.error(f"Unsupported word count: {total_words}")
-                return -1
-                
-            logger.debug(f"Entropy bits (total): {entropy_bits}, effective entropy bits: {effective_entropy_bits}")
-            logger.debug(f"Entropy string: {entropy_string}")
+            checksum_bits = total_words // 3
+            logger.debug(f"Checksum bits needed: {checksum_bits}")
             
-            # エントロピーをバイト配列に変換（8ビットずつ）
-            # 最後のバイトが8ビット未満の場合は末尾に0でパディング
+            # 11語のビット文字列を128ビット（16バイト）にパディング
+            # 121ビット → 128ビットに拡張（末尾7ビットを0で埋める）
+            padded_bit_string = bit_string.ljust(128, '0')
+            logger.debug(f"Padded bit string to 128 bits: {padded_bit_string}")
+            
+            # 128ビットをバイト配列に変換
             entropy_bytes = bytearray()
-            for i in range(0, effective_entropy_bits, 8):
-                byte_str = entropy_string[i:i+8]
-                if len(byte_str) < 8:
-                    byte_str = byte_str.ljust(8, '0')  # 末尾を0でパディング
+            for i in range(0, 128, 8):
+                byte_str = padded_bit_string[i:i+8]
                 entropy_bytes.append(int(byte_str, 2))
             
-            logger.debug(f"Entropy bytes: {[hex(b) for b in entropy_bytes]}")
+            logger.debug(f"128-bit entropy bytes: {[hex(b) for b in entropy_bytes]}")
             
             # エントロピーからSHA256を計算
             import hashlib
             hash_bytes = hashlib.sha256(bytes(entropy_bytes)).digest()
             logger.debug(f"SHA256 hash: {hash_bytes.hex()}")
             
-            # チェックサムビットを抽出
-            checksum_bits = total_words // 3
+            # チェックサムビットを抽出（最初の4ビット）
             hash_bit_string = ''.join(format(b, '08b') for b in hash_bytes)
             checksum_string = hash_bit_string[:checksum_bits]
-            logger.debug(f"Checksum bits needed: {checksum_bits}, checksum string: {checksum_string}")
+            logger.debug(f"Checksum string from hash: {checksum_string}")
             
             # 最後の単語のインデックスを計算
-            # 残りのエントロピービット + チェックサムビット = 11ビット
-            remaining_entropy_bits = 11 - checksum_bits
+            # 元の121ビットの最後から11ビット目以降 + チェックサム4ビット = 11ビット
+            remaining_entropy_bits = 11 - checksum_bits  # 7ビット
             
-            if total_words == 12:
-                # 12語の場合：128ビットエントロピーのうち最後の7ビット
-                full_entropy_bits = entropy_bits
-                remaining_entropy_start = effective_entropy_bits
-                # エントロピーバイト配列の最後の部分から残りビットを取得
-                entropy_bit_string = ''.join(format(b, '08b') for b in entropy_bytes)
-                # 128ビットのうち最後の7ビットを取得
-                if len(entropy_bit_string) >= full_entropy_bits:
-                    remaining_entropy = entropy_bit_string[full_entropy_bits - remaining_entropy_bits:full_entropy_bits]
-                else:
-                    # 足りない場合は0でパディング
-                    remaining_entropy = entropy_bit_string[-remaining_entropy_bits:] if len(entropy_bit_string) >= remaining_entropy_bits else entropy_bit_string.ljust(remaining_entropy_bits, '0')
+            # 元のビット文字列から最後の7ビットを取得
+            if len(bit_string) >= remaining_entropy_bits:
+                # 121ビットの最後の7ビットを取得
+                remaining_entropy = bit_string[-remaining_entropy_bits:]
             else:
-                # 24語の場合：従来のロジック
-                remaining_entropy = bit_string[entropy_bits:entropy_bits + remaining_entropy_bits] if len(bit_string) > entropy_bits else ""
+                # 足りない場合は0でパディング
+                remaining_entropy = bit_string.ljust(remaining_entropy_bits, '0')
             
             logger.debug(f"Remaining entropy bits: {remaining_entropy_bits}, remaining entropy: {remaining_entropy}")
             
