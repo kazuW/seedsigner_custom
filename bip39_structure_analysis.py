@@ -160,45 +160,32 @@ def simulate_nfc_storage_corruption():
         # === 修正ロジック ===
         print(f"\n=== 修正ロジック適用 ===")
         
-        # 1. NFCエントロピーの11単語を抽出
-        entropy_bits = bin(int.from_bytes(nfc_stored_entropy, 'big'))[2:].zfill(128)
-        
-        nfc_words = []
-        for i in range(11):
-            start_bit = i * 11
-            end_bit = start_bit + 11
-            word_bits = entropy_bits[start_bit:end_bit]
-            word_index = int(word_bits, 2)
-            nfc_words.append(wordlist[word_index])
-        
-        print(f"NFCから抽出した11単語: {' '.join(nfc_words)}")
-        
-        # 2. 11単語から121ビットエントロピーを抽出
-        entropy_bits_121 = ""
-        for i in range(11):
-            start_bit = i * 11
-            end_bit = start_bit + 11
-            word_bits = entropy_bits[start_bit:end_bit]
-            entropy_bits_121 += word_bits
-        
-        print(f"11単語からの121ビット: {entropy_bits_121}")
-        
-        # 3. NFCチェックサムから12番目の単語の7ビットエントロピーを抽出
+        # 正しいアプローチ：管理ブロックのチェックサムから12番目の単語の情報を使用
+        # 1. チェックサムから12番目の単語のエントロピー部分（7ビット）を抽出
         checksum_word_index = nfc_stored_checksum
         checksum_word_bits = f"{checksum_word_index:011b}"
-        last_word_entropy_bits = checksum_word_bits[:7]  # 上位7ビット
+        last_word_entropy_7bits = checksum_word_bits[:7]  # 上位7ビット
         
+        print(f"管理ブロックチェックサム: {checksum_word_index} -> '{wordlist[checksum_word_index]}'")
         print(f"チェックサム単語ビット: {checksum_word_bits}")
-        print(f"12番目の単語のエントロピー7ビット: {last_word_entropy_bits}")
+        print(f"12番目の単語エントロピー（7ビット）: {last_word_entropy_7bits}")
         
-        # 4. 完全な128ビットエントロピーを再構築
-        complete_entropy_bits = entropy_bits_121 + last_word_entropy_bits
+        # 2. NFCエントロピーから最初の121ビット（11単語分）を抽出
+        entropy_bits = bin(int.from_bytes(nfc_stored_entropy, 'big'))[2:].zfill(128)
+        entropy_121bits = entropy_bits[:121]  # 最初の121ビット
+        
+        print(f"NFCエントロピー（破損）: {entropy_bits}")
+        print(f"11単語分（121ビット）: {entropy_121bits}")
+        
+        # 3. 121ビット + 7ビット = 128ビットの完全なエントロピーを再構築
+        complete_entropy_bits = entropy_121bits + last_word_entropy_7bits
         complete_entropy_int = int(complete_entropy_bits, 2)
         reconstructed_entropy = complete_entropy_int.to_bytes(16, 'big')
         
-        print(f"再構築エントロピー: {binascii.hexlify(reconstructed_entropy).decode('utf-8')}")
+        print(f"完全エントロピー（128ビット）: {complete_entropy_bits}")
+        print(f"再構築エントロピー（バイト）: {binascii.hexlify(reconstructed_entropy).decode('utf-8')}")
         
-        # 5. 再構築されたエントロピーから正しいニーモニックを生成
+        # 4. 再構築されたエントロピーから正しいニーモニックを生成
         correct_mnemonic_string = bip39.mnemonic_from_bytes(reconstructed_entropy)
         correct_mnemonic = correct_mnemonic_string.split()
         

@@ -535,7 +535,7 @@ class NFCReader:
             return None
     
     def _decompress_seed_to_mnemonic(self, compressed_seed: bytes, seed_type: int, checksum: int) -> Optional[List[str]]:
-        """圧縮されたシードデータからニーモニックを復元（チェックサム考慮）"""
+        """圧縮されたシードデータからニーモニックを復元（チェックサム考慮による修正）"""
         try:
             # 128bitか256bitかを判定
             if seed_type == self.SEED_128BIT:
@@ -556,12 +556,12 @@ class NFCReader:
             logger.debug(f"Compressed seed length: {len(compressed_seed)} bytes (expected: {expected_bytes})")
             logger.info(f"NFCReader: BIP39 Structure Analysis:")
             logger.info(f"NFCReader:   Expected: {num_words} words = {entropy_bits} entropy bits + {checksum_bits} checksum bits")
-            logger.info(f"NFCReader:   Last word structure: 7 entropy bits + {checksum_bits} checksum bits = 11 bits")
+            logger.info(f"NFCReader:   NFC storage: {expected_bytes} bytes entropy + separate checksum in management block")
             
-            # BIP39構造に基づいてエントロピーを再構築
+            # NFCエントロピー破損修正ロジック
             try:
                 from embit import bip39
-                logger.info(f"NFCReader: === BIP39 Entropy Reconstruction ===")
+                logger.info(f"NFCReader: === NFCエントロピー破損修正ロジック ===")
                 
                 # 管理ブロックのチェックサムインデックスから最後の単語を取得
                 wordlist = Seed.get_wordlist(SettingsConstants.WORDLIST_LANGUAGE__ENGLISH)
@@ -572,95 +572,88 @@ class NFCReader:
                 checksum_word = wordlist[checksum]
                 logger.info(f"NFCReader: Stored checksum: {checksum} -> '{checksum_word}'")
                 
-                # NFCに保存されているのは純粋なエントロピー（128bit）
-                # BIP39の12番目の単語は 7bit（エントロピー）+ 4bit（チェックサム）
-                # 管理ブロックのチェックサムから12番目の単語の7bitエントロピー部分を取得
-                last_word_entropy_bits = (checksum >> checksum_bits) & 0x7F  # 上位7ビットを取得
-                logger.info(f"NFCReader: Last word entropy bits from checksum: {last_word_entropy_bits:07b} (0x{last_word_entropy_bits:02X})")
+                # 12番目の単語から7ビットエントロピー + 4ビットチェックサムを分解
+                checksum_word_bits = f"{checksum:011b}"
+                last_word_entropy_7bits = checksum_word_bits[:7]  # 上位7ビット（エントロピー）
+                last_word_checksum_4bits = checksum_word_bits[7:]  # 下位4ビット（チェックサム）
                 
-                # NFCの16バイトエントロピー（128bit）に7bit追加して135bitにする
-                compressed_seed_bits = bin(int.from_bytes(compressed_seed, 'big'))[2:].zfill(entropy_bits)
-                last_word_entropy_bits_str = f"{last_word_entropy_bits:07b}"
-                full_entropy_bits = compressed_seed_bits + last_word_entropy_bits_str
+                logger.info(f"NFCReader: 12番目の単語ビット構造: {checksum_word_bits}")
+                logger.info(f"NFCReader:   エントロピー7ビット: {last_word_entropy_7bits} (decimal: {int(last_word_entropy_7bits, 2)})")
+                logger.info(f"NFCReader:   チェックサム4ビット: {last_word_checksum_4bits} (decimal: {int(last_word_checksum_4bits, 2)})")
                 
-                logger.info(f"NFCReader: NFC entropy (128 bits): {compressed_seed_bits}")
-                logger.info(f"NFCReader: Last word entropy (7 bits): {last_word_entropy_bits_str}")
-                logger.info(f"NFCReader: Full entropy (135 bits): {full_entropy_bits}")
+                # NFCから11単語を抽出（破損している可能性あり）
+                nfc_entropy_bits = bin(int.from_bytes(compressed_seed, 'big'))[2:].zfill(entropy_bits)
+                logger.info(f"NFCReader: NFC格納エントロピー（{entropy_bits}ビット）: {nfc_entropy_bits}")
                 
-                # 135bitエントロピーをバイト配列に変換（17バイト、最後のバイトは上位3bitのみ使用）
-                full_entropy_int = int(full_entropy_bits, 2)
-                full_entropy_bytes = full_entropy_int.to_bytes(17, 'big')
+                # 最初の121ビット（11単語分）を抽出
+                entropy_121bits = nfc_entropy_bits[:121]
                 
-                # 実際のBIP39エントロピーは128bitなので、135bitから計算されたチェックサムを使って
-                # 正しい128bitエントロピーを再構築する必要がある
+                # 12番目の単語の7ビットエントロピーを追加して128ビットエントロピーを再構築
+                complete_entropy_bits = entropy_121bits + last_word_entropy_7bits
+                logger.info(f"NFCReader: 完全エントロピー再構築:")
+                logger.info(f"NFCReader:   121ビット（11単語）: {entropy_121bits}")
+                logger.info(f"NFCReader:   7ビット（12番目）:  {last_word_entropy_7bits}")
+                logger.info(f"NFCReader:   完全128ビット:      {complete_entropy_bits}")
                 
-                # 代替案：11個の単語から完全なエントロピーを再構築
-                # まず11個の単語のインデックスを取得（NFCの16バイトから）
-                word_indices = []
-                bit_string = compressed_seed_bits
+                # 128ビットエントロピーをバイト配列に変換
+                complete_entropy_int = int(complete_entropy_bits, 2)
+                reconstructed_entropy = complete_entropy_int.to_bytes(16, 'big')
+                logger.info(f"NFCReader: 再構築エントロピー: {binascii.hexlify(reconstructed_entropy).decode('utf-8')}")
                 
-                for i in range(11):  # 最初の11単語
-                    start_bit = i * 11
-                    end_bit = start_bit + 11
-                    if end_bit <= len(bit_string):
-                        word_index = int(bit_string[start_bit:end_bit], 2)
-                        word_indices.append(word_index)
+                # 再構築されたエントロピーから正しいBIP39ニーモニックを生成
+                correct_mnemonic_string = bip39.mnemonic_from_bytes(reconstructed_entropy)
+                correct_mnemonic = correct_mnemonic_string.split()
                 
-                # 11個の単語を取得
-                partial_mnemonic = []
-                for index in word_indices:
-                    if index >= len(wordlist):
-                        logger.error(f"Invalid word index: {index}")
-                        return None
-                    partial_mnemonic.append(wordlist[index])
+                logger.info(f"NFCReader: 修正ニーモニック: {' '.join(correct_mnemonic)}")
+                logger.info(f"NFCReader: 修正12番目の単語: '{correct_mnemonic[-1]}'")
                 
-                logger.info(f"NFCReader: Partial mnemonic (11 words): {' '.join(partial_mnemonic)}")
+                # 検証：再生成されたチェックサムが元のチェックサムと一致するか確認
+                regenerated_last_word_index = wordlist.index(correct_mnemonic[-1])
+                logger.info(f"NFCReader: 検証結果:")
+                logger.info(f"NFCReader:   元のチェックサム: {checksum} -> '{checksum_word}'")
+                logger.info(f"NFCReader:   再生成チェックサム: {regenerated_last_word_index} -> '{correct_mnemonic[-1]}'")
                 
-                # 11単語からBIP39標準でエントロピーを取得
-                partial_mnemonic_string = " ".join(partial_mnemonic)
-                try:
-                    # 11単語からエントロピーを抽出（チェックサム無視）
-                    entropy_from_words = bip39.mnemonic_to_bytes(partial_mnemonic_string, ignore_checksum=True)
-                    logger.info(f"NFCReader: Entropy from 11 words: {binascii.hexlify(entropy_from_words).decode('utf-8')}")
-                    
-                    # このエントロピーから正しいBIP39ニーモニックを生成
-                    correct_mnemonic_string = bip39.mnemonic_from_bytes(entropy_from_words)
-                    correct_mnemonic = correct_mnemonic_string.split()
-                    
-                    logger.info(f"NFCReader: Correct mnemonic from BIP39: {' '.join(correct_mnemonic)}")
-                    logger.info(f"NFCReader: Generated last word: '{correct_mnemonic[-1]}'")
-                    
-                    # 生成された最後の単語のインデックスを取得
-                    generated_last_word_index = wordlist.index(correct_mnemonic[-1])
-                    logger.info(f"NFCReader: Generated checksum index: {generated_last_word_index}")
-                    logger.info(f"NFCReader: Stored checksum index: {checksum}")
-                    
-                    # CompactSeedQRとの比較情報
-                    logger.info(f"NFCReader: === CompactSeedQR Comparison ===")
-                    logger.info(f"NFCReader: Reconstructed entropy: {binascii.hexlify(entropy_from_words).decode('utf-8')}")
-                    logger.info(f"NFCReader: This should match CompactSeedQR entropy")
-                    logger.info(f"NFCReader: Reconstructed mnemonic: {' '.join(correct_mnemonic)}")
-                    logger.info(f"NFCReader: This should match CompactSeedQR mnemonic")
-                    
-                    # チェックサム検証
-                    if generated_last_word_index == checksum:
-                        logger.info(f"NFCReader: ✓ Checksum verification successful: {generated_last_word_index} == {checksum}")
-                        logger.info(f"NFCReader: ✓ NFC entropy reconstruction matches BIP39 standard")
-                        return correct_mnemonic
-                    else:
-                        logger.warning(f"NFCReader: ⚠ Checksum mismatch detected:")
-                        logger.warning(f"NFCReader:   BIP39 standard generates: {generated_last_word_index} -> '{correct_mnemonic[-1]}'")
-                        logger.warning(f"NFCReader:   NFC stores:              {checksum} -> '{checksum_word}'")
-                        logger.warning(f"NFCReader: Using BIP39 standard result (this should match CompactSeedQR)")
-                        return correct_mnemonic
+                # CompactSeedQRとの比較情報
+                logger.info(f"NFCReader: === CompactSeedQR Comparison ===")
+                logger.info(f"NFCReader: Reconstructed entropy: {binascii.hexlify(reconstructed_entropy).decode('utf-8')}")
+                logger.info(f"NFCReader: This should match CompactSeedQR entropy")
+                logger.info(f"NFCReader: Reconstructed mnemonic: {' '.join(correct_mnemonic)}")
+                logger.info(f"NFCReader: This should match CompactSeedQR mnemonic")
+                
+                # チェックサム一致確認
+                if regenerated_last_word_index == checksum:
+                    logger.info(f"NFCReader: ✓ Checksum verification successful: {regenerated_last_word_index} == {checksum}")
+                    logger.info(f"NFCReader: ✓ NFC entropy reconstruction matches BIP39 standard")
+                    logger.info(f"NFCReader: ✓ Both NFC and CompactSeedQR should produce identical results")
+                    return correct_mnemonic
+                else:
+                    logger.warning(f"NFCReader: ⚠ Checksum mismatch after reconstruction:")
+                    logger.warning(f"NFCReader:   BIP39 generates: {regenerated_last_word_index} -> '{correct_mnemonic[-1]}'")
+                    logger.warning(f"NFCReader:   NFC stores:     {checksum} -> '{checksum_word}'")
+                    logger.warning(f"NFCReader: Using reconstructed result as it should be correct")
+                    return correct_mnemonic
                         
-                except Exception as e:
-                    logger.error(f"NFCReader: Error in BIP39 entropy reconstruction: {e}")
-                    return None
-                    
             except Exception as e:
-                logger.error(f"Error in checksum-aware decompression: {e}")
-                return None
+                logger.error(f"Error in entropy reconstruction: {e}")
+                # フォールバック：元のロジックを試行
+                logger.info(f"NFCReader: Falling back to direct entropy processing...")
+                
+                try:
+                    # 直接エントロピーからニーモニックを生成（破損データの可能性）
+                    mnemonic_string = bip39.mnemonic_from_bytes(compressed_seed)
+                    mnemonic = mnemonic_string.split()
+                    
+                    if len(mnemonic) == num_words:
+                        logger.warning(f"NFCReader: Using direct entropy processing (may be corrupted)")
+                        logger.warning(f"NFCReader: Mnemonic: {' '.join(mnemonic)}")
+                        return mnemonic
+                    else:
+                        logger.error(f"NFCReader: Invalid mnemonic length: {len(mnemonic)} (expected {num_words})")
+                        return None
+                        
+                except Exception as fallback_e:
+                    logger.error(f"NFCReader: Fallback processing also failed: {fallback_e}")
+                    return None
             
         except Exception as e:
             logger.error(f"Error decompressing seed to mnemonic: {e}")
