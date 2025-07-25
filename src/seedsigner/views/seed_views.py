@@ -2356,9 +2356,8 @@ class SeedExportNFCWriteView(View):
 
     def run(self):
         from seedsigner.models.nfc_writer import NFCWriter
-        #from seedsigner.gui.screens.loading_screen import LoadingScreen
         
-        # 警告画面を表示
+        # Show warning screen
         destination = Destination(
             SeedExportNFCWriteProcessView,
             view_args={"seed_num": self.seed_num},
@@ -2388,27 +2387,22 @@ class SeedExportNFCWriteProcessView(View):
 
     def run(self):
         from seedsigner.models.nfc_writer import NFCWriter, NFCWriteException
+        from seedsigner.gui.screens.screen import LoadingScreenThread
         
         logger.info(f"Starting NFC write process for seed {self.seed_num}")
 
-        # 処理中メッセージを表示
-        self.run_screen(
-            DireWarningScreen,  # 修正：適切なスクリーンクラスを使用
-            title=_("Writing to NFC"),
-            status_headline=_("Please wait..."),
-            text=_("Please wait while writing to NFC card..."),
-            show_back_button=False,
-            button_data=[],  # ボタンなしで処理を継続
-        )
+        # Display loading screen during write process
+        loading_screen = LoadingScreenThread(text=_("Writing to NFC card..."))
+        loading_screen.start()
         
         try:
-            # NFCWriterインスタンスを作成
+            # Create NFCWriter instance
             nfc_writer = NFCWriter()
             
-            # 書き込み処理の実行
+            # Execute write process
             result = nfc_writer.write_seed_to_nfc(self.seed)
             
-            # 結果に応じて次のViewに遷移
+            # Navigate to appropriate view based on result
             if result['success']:
                 return Destination(SeedExportNFCWriteSuccessView, view_args={
                     "seed_num": self.seed_num,
@@ -2425,6 +2419,9 @@ class SeedExportNFCWriteProcessView(View):
                 "seed_num": self.seed_num,
                 "error_message": f"Error: {str(e)}"
             })
+        
+        finally:
+            loading_screen.stop()
 
 
 class SeedExportNFCWriteSuccessView(View):
@@ -2504,19 +2501,19 @@ class SeedReadNFCView(View):
         from seedsigner.models.nfc_reader import NFCReader, NFCReadException
         from seedsigner.gui.screens.screen import LoadingScreenThread
         
-        # 読み込み中メッセージを表示
+        # Display loading screen during read process
         loading_screen = LoadingScreenThread(text=_("Scanning NFC card for seeds..."))
         loading_screen.start()
         
         try:
-            # NFCReaderインスタンスを作成
+            # Create NFCReader instance
             nfc_reader = NFCReader()
             
-            # 読み込み処理の実行
+            # Execute read process
             result = nfc_reader.read_seeds_from_nfc()
             
-            # 結果をログに出力
-            logger.info(f"NFC読み込み結果: {result}")
+            # Log results
+            logger.info(f"NFC read result: {result}")
 
             if result['success']:
                 if result['seeds']:
@@ -2541,9 +2538,9 @@ class SeedSelectFromNFCView(View):
     def run(self):
         button_data = []
         
-        # 各シードに対してボタンを作成
+        # Create button for each seed
         for seed in self.seeds:
-            fingerprint = seed['fingerprint'][:8]  # 最初の8文字のみ表示
+            fingerprint = seed['fingerprint'][:8]  # Display only first 8 characters
             seed_type = seed['seed_type']
             button_data.append(ButtonOption(f"{fingerprint} ({seed_type})", SeedSignerIconConstants.FINGERPRINT))
 
@@ -2600,12 +2597,12 @@ class SeedLoadFromNFCView(View):
     def run(self):
         passphrase = ""
         
-        # BIP39 passphrase が required の場合は入力画面を表示
+        # Show passphrase input screen if BIP39 passphrase is required
         if self.settings.get_value(SettingsConstants.SETTING__PASSPHRASE) == SettingsConstants.OPTION__REQUIRED:
-            # パスフレーズ入力画面へ
+            # Navigate to passphrase input screen
             return Destination(SeedNFCPassphraseView, view_args={"seed_info": self.seed_info})
         
-        # パスフレーズなしでシードロード
+        # Load seed without passphrase
         return Destination(SeedLoadFromNFCProcessView, view_args={
             "seed_info": self.seed_info,
             "passphrase": passphrase
@@ -2645,18 +2642,18 @@ class SeedLoadFromNFCProcessView(View):
         from seedsigner.models.seed import Seed
         from seedsigner.gui.screens.screen import LoadingScreenThread
         
-        # 読み込み中メッセージを表示
+        # Display loading screen during seed loading
         loading_screen = LoadingScreenThread(text=_("Loading seed from NFC card..."))
         loading_screen.start()
         
         try:
-            # seed_infoから既に読み込まれたシードデータを使用
+            # Use already read seed data from seed_info
             mnemonic = self.seed_info['mnemonic']
             
-            # Seedオブジェクトを作成
+            # Create Seed object
             seed = Seed(mnemonic=mnemonic, passphrase=self.passphrase)
             
-            # シードをコントローラーのstorageに追加
+            # Add seed to controller storage
             self.controller.storage.set_pending_seed(seed)
             seed_num = self.controller.storage.finalize_pending_seed()
             
@@ -2731,15 +2728,15 @@ class SeedDeleteFromNFCProcessView(View):
         from seedsigner.models.nfc_reader import NFCReader, NFCReadException
         from seedsigner.gui.screens.screen import LoadingScreenThread
         
-        # 削除中メッセージを表示
+        # Display loading screen during deletion
         loading_screen = LoadingScreenThread(text=_("Deleting seed from NFC card..."))
         loading_screen.start()
         
         try:
-            # NFCReaderインスタンスを作成
+            # Create NFCReader instance
             nfc_reader = NFCReader()
             
-            # 指定されたセクタからシードを削除
+            # Delete seed from specified sector
             result = nfc_reader.delete_seed_from_nfc(self.seed_info['sector'])
             
             if result['success']:
